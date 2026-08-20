@@ -1,8 +1,9 @@
 # ADR-004: Media Generation Abstraction
 
-**Status: DECIDED (Phase 3-4); B-roll/avatar-image provider revised twice
-on 2026-08-20 (Gemini Imagen → Hugging Face → Pollinations.ai) — see the
-table and revision notes below.**
+**Status: DECIDED (Phase 3-4); B-roll/avatar-image provider revised three
+times on 2026-08-20 (Gemini Imagen → Hugging Face → Pollinations.ai →
+Cloudflare Workers AI, the permanent choice) — see the table and revision
+notes below.**
 
 ## Context
 
@@ -47,7 +48,7 @@ Providers were then picked for the hackathon build:
 
 | Interface | Provider | File | Resilience shape |
 |---|---|---|---|
-| `VisualProvider` | Pollinations.ai (free, keyless REST API) | [`providers/visual/pollinations_visual_provider.py`](../../providers/visual/pollinations_visual_provider.py) | Tier 0 content-addressed `LocalCache` (never re-generate the same prompt) → Tier 1 retry with backoff on a transient failure → Tier 2 local Pillow-drawn placeholder card if the API call still fails |
+| `VisualProvider` | Cloudflare Workers AI (`@cf/black-forest-labs/flux-1-schnell`) | [`providers/visual/cloudflare_flux_provider.py`](../../providers/visual/cloudflare_flux_provider.py) | Tier 0 content-addressed `LocalCache` (never re-generate the same prompt) → Tier 1 `CloudflareFluxManager` horizontal token rotation → Tier 2 local Pillow-drawn placeholder card if every token is exhausted |
 | `VideoGenerationProvider` (avatar hook) | Hedra Character-3, then D-ID | [`providers/video/avatar_provider.py`](../../providers/video/avatar_provider.py) | Tier 1 Hedra (horizontal key rotation) → Tier 2 D-ID (horizontal key rotation) → Tier 3 a locally-generated static placeholder clip (`fallback_assets/generic_hook.mp4`) |
 
 `AudioProvider` (background music) remains unimplemented — out of hackathon
@@ -81,9 +82,28 @@ free on the `hf-inference` tier). `PollinationsVisualProvider`
 (`providers/visual/pollinations_visual_provider.py`) needs no API key
 and no billing at all — a plain unauthenticated GET request.
 
+**Revision 3 (2026-08-20, same day): `VisualProvider` moved onto
+Cloudflare Workers AI — the project's permanent choice.**
+`providers/visual/pollinations_visual_provider.py`
+(`PollinationsVisualProvider`) is likewise kept in the codebase,
+correct and working, but no longer wired in. Reason: unlike the first
+two revisions, this wasn't forced by a billing wall — Pollinations.ai's
+free public queue worked, just not as the long-term answer. Cloudflare
+Workers AI's `@cf/black-forest-labs/flux-1-schnell` is a distilled
+few-step model built specifically for low latency (Cloudflare's own
+recommended `steps=4`), served from Cloudflare's edge network, and
+produced noticeably higher-quality, artifact-free output than every
+prior provider tried — confirmed side-by-side during live testing.
+`CloudflareFluxVisualProvider` (`providers/visual/cloudflare_flux_provider.py`)
+needs a Cloudflare account id and one or more API tokens
+(`CLOUDFLARE_ACCOUNT_ID` / `CLOUDFLARE_API_TOKENS`), rotated horizontally
+via `CloudflareFluxManager` (`providers/visual/cloudflare_flux_client.py`)
+on a 429/auth error — the same `itertools.cycle` + cooldown shape as
+`GeminiManager`/`HedraAvatarManager`/`SarvamTTSManager`.
+
 **Known gap:** no concrete `SceneDirector` or `SceneRenderer` exists yet
 (`SceneRendererRegistry` still resolves zero renderers). The Phase 5
-dashboard (`dashboard/app.py`) calls `PollinationsVisualProvider` and
+dashboard (`dashboard/app.py`) calls `CloudflareFluxVisualProvider` and
 `AvatarFailoverProvider` directly rather than through a `SceneRenderer`,
 manually constructing the `Scene` objects each call needs. This is a
 documented, deliberate shortcut for the hackathon timeline, not a

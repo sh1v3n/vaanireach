@@ -69,7 +69,7 @@ from providers.llm.gemini_client import GeminiAllKeysExhaustedError, GeminiManag
 from providers.llm.gemini_provider import GeminiLLMProvider  # noqa: E402
 from providers.tts.sarvam_tts_provider import SarvamTTSProvider  # noqa: E402
 from providers.video.avatar_provider import AvatarFailoverProvider  # noqa: E402
-from providers.visual.pollinations_visual_provider import PollinationsVisualProvider  # noqa: E402
+from providers.visual.cloudflare_flux_provider import CloudflareFluxVisualProvider  # noqa: E402
 from rendering.adapters.moviepy_video_renderer import MoviePyVideoRenderer  # noqa: E402
 
 # --------------------------------------------------------------------------- constants
@@ -120,7 +120,7 @@ class Providers:
     llm: GeminiLLMProvider | None
     tts: SarvamTTSProvider
     avatar: AvatarFailoverProvider
-    visual: PollinationsVisualProvider
+    visual: CloudflareFluxVisualProvider
     renderer: MoviePyVideoRenderer
     init_error: str | None
 
@@ -136,16 +136,19 @@ def get_providers() -> Providers:
     fallback). That's caught here and surfaced as a normal `st.error`,
     not an unhandled crash.
 
-    B-roll/avatar-source image generation is Pollinations.ai
-    (`PollinationsVisualProvider`) — free and keyless, no billing at
-    all. Two prior providers were tried and dropped for this exact
-    reason: Google Imagen 3 requires a billing-enabled Cloud project
-    even on free-tier Gemini keys (every call 404'd with "not supported
-    for predict"), and Hugging Face's free `hf-inference` tier /
-    Together AI (one of the backends its router can pick) both started
-    gating image generation behind a billing/deposit requirement too.
-    See providers/visual/pollinations_visual_provider.py's module
-    docstring."""
+    B-roll/avatar-source image generation is Cloudflare Workers AI's
+    `@cf/black-forest-labs/flux-1-schnell` (`CloudflareFluxVisualProvider`)
+    — the project's permanent image-generation provider: fast (a
+    distilled few-step model, Cloudflare's edge network), reliable, and
+    noticeably higher quality than every prior candidate in testing.
+    Three prior providers were tried and dropped before landing here,
+    each for a billing/quota wall: Google Imagen 3 requires a
+    billing-enabled Cloud project even on free-tier Gemini keys, Hugging
+    Face's free `hf-inference` tier (and Together AI, one of the
+    backends its router can pick) started gating image generation behind
+    billing/deposit, and Pollinations.ai's free public queue proved
+    fine for a demo but wasn't the permanent answer. See
+    providers/visual/cloudflare_flux_provider.py's module docstring."""
     try:
         gemini_manager = GeminiManager()
     except ValueError as exc:
@@ -154,7 +157,7 @@ def get_providers() -> Providers:
             llm=None,
             tts=SarvamTTSProvider(),
             avatar=AvatarFailoverProvider(),
-            visual=PollinationsVisualProvider(),
+            visual=CloudflareFluxVisualProvider(),
             renderer=MoviePyVideoRenderer(),
             init_error=str(exc),
         )
@@ -163,7 +166,7 @@ def get_providers() -> Providers:
         llm=GeminiLLMProvider(gemini_manager),
         tts=SarvamTTSProvider(),
         avatar=AvatarFailoverProvider(),
-        visual=PollinationsVisualProvider(),
+        visual=CloudflareFluxVisualProvider(),
         renderer=MoviePyVideoRenderer(),
         init_error=None,
     )
@@ -294,7 +297,7 @@ def generate_broll_prompts(manager: GeminiManager, narration_text: str, audience
 
 def get_avatar_source_image(providers: Providers) -> str:
     """The presenter portrait Hedra/D-ID animate for the hook clip.
-    Generated through the same PollinationsVisualProvider as the B-roll —
+    Generated through the same CloudflareFluxVisualProvider as the B-roll —
     its LocalCache means this only ever hits the network once across the
     dashboard's lifetime, not once per render."""
     placeholder_scene = Scene(
