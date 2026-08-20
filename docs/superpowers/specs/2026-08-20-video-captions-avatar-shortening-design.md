@@ -26,6 +26,26 @@ This repo already has most of the underlying pieces built and tested independent
 one path that doesn't use them yet, plus adding the actual pixel compositing (overlay + burn-in),
 which doesn't exist yet for this pipeline.
 
+**The avatar is a required part of the intended MVP experience, not a bonus/optional feature.**
+The target output is a professional public-information/explainer video with a persistent talking
+presenter — story-driven B-roll + multilingual narration + burned-in captions + a lip-synced
+presenter avatar in a bottom-left PiP — not a slideshow-with-voiceover that happens to also support
+an avatar. The graceful-degradation behavior described under Failure handling below exists solely
+as a *reliability safety net* for when the avatar provider or compositing step technically fails at
+runtime — it is never a reason to skip, defer, or treat avatar generation as optional during
+implementation. Every run attempts full avatar + PiP + caption compositing; only a genuine runtime
+failure falls back to captioned-B-roll-only.
+
+**Build/verification priority** for the implementation plan, in order:
+1. Base story video (existing `compose_multi_scene()` B-roll + xfade + audio — already working).
+2. Full narration audio track (`concat_audio_files()` over the same per-scene audio already used).
+3. Avatar lip-sync (`AvatarFailoverProvider.generate_avatar_hook()` against that full track).
+4. PiP compositing (avatar overlay onto the B-roll video).
+5. Caption burn-in (subtitles bar onto the same composited output).
+6. Final verification (fact-verification pass stays as today, plus a real end-to-end check that a
+   produced video actually contains the avatar box and burned captions, not just that ffmpeg
+   exited 0).
+
 ## Decisions (confirmed with user)
 
 - **Avatar placement**: PiP rectangle, bottom-left corner, full video duration — not a full-screen
@@ -79,11 +99,13 @@ dashboard pipeline's provider) using the existing `AVATAR_IMAGE_PROMPT` text, un
 project id so `LocalCache` serves it from disk on every subsequent call instead of regenerating
 per video.
 
-**Failure handling**: the new avatar+compositing step wraps the *existing, already-correct*
-`compose_multi_scene()` output rather than replacing it. If avatar generation or the compositing
-ffmpeg call fails for any reason, the pipeline logs a warning and returns the plain B-roll+audio
-video (today's behavior, captions and all still built as sidecars) instead of failing the whole
-run — a video without a PiP avatar is an acceptable degraded state; no video at all is not.
+**Failure handling — a reliability safety net, not a design option**: every run *always attempts*
+full avatar generation + PiP compositing + caption burn-in; this is never conditionally skipped.
+The new step wraps the *existing, already-correct* `compose_multi_scene()` output rather than
+replacing it purely so that an unexpected *runtime* failure (e.g. the compositing ffmpeg call
+itself erroring on a malformed input) degrades to the plain B-roll+audio video instead of crashing
+the whole pipeline — it logs loudly (not silently) when this happens, since a demo run landing in
+the degraded path is a signal something is broken and needs fixing, not an accepted steady state.
 `AvatarFailoverProvider.generate_avatar_hook()` itself already never raises (it has its own Tier-3
 static fallback), so the only new failure surface is the compositing ffmpeg call.
 
@@ -141,6 +163,8 @@ static fallback), so the only new failure surface is the compositing ffmpeg call
   `test_no_duplicate_narrative_roles`/`test_scene_count_is_not_hardcoded`.
 - `tests/demo_multilingual_video.py`: extend its per-language SUMMARY output to report whether PiP
   avatar + caption burn-in succeeded, so a manual run stays the fastest way to eyeball the result.
+  Per the build-priority list above, a demo run landing on the degraded (no-avatar) path should be
+  loudly visible in this output, not quietly indistinguishable from success.
 
 ## Out of scope
 
