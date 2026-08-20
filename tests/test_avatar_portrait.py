@@ -10,9 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.models.enums import GenerationStatus, MediaAssetType  # noqa: E402
 from core.models.media import MediaAsset  # noqa: E402
-from providers.video.avatar_portrait import (  # noqa: E402
-    AVATAR_IMAGE_HEIGHT, AVATAR_IMAGE_PROMPT, AVATAR_IMAGE_WIDTH, SHARED_ASSET_PROJECT_ID, get_avatar_source_image,
-)
+from providers.video.avatar_portrait import AVATAR_IMAGE_PROMPT, SHARED_ASSET_PROJECT_ID, get_avatar_source_image  # noqa: E402
 
 
 class _FakeVisualProvider:
@@ -41,17 +39,8 @@ def test_get_avatar_source_image_uses_the_fixed_prompt_and_shared_project_id():
     prompt, project_id, width, height = fake.calls[0]
     assert prompt == AVATAR_IMAGE_PROMPT
     assert project_id == SHARED_ASSET_PROJECT_ID
-    assert width == AVATAR_IMAGE_WIDTH
-    assert height == AVATAR_IMAGE_HEIGHT
-
-
-def test_get_avatar_source_image_requests_a_4_3_landscape_leaning_size():
-    """Regression guard: the portrait must be wider than it is tall (4:3),
-    not the old default/portrait shape - a portrait-shaped source image
-    would make the landscape PiP box overflow the frame (see
-    rendering/adapters/ffmpeg_video_renderer.py's PIP_WIDTH)."""
-    assert AVATAR_IMAGE_WIDTH > AVATAR_IMAGE_HEIGHT
-    assert AVATAR_IMAGE_WIDTH / AVATAR_IMAGE_HEIGHT == 1024 / 768  # exactly 4:3
+    assert width is None  # no explicit size requested — the model's own default (portrait pipeline)
+    assert height is None
 
 
 def test_calling_twice_still_passes_the_same_prompt_both_times():
