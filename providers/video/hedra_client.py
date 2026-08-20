@@ -70,7 +70,14 @@ HEDRA_BASE_URL = "https://api.hedra.com/v3"
 DEFAULT_MODEL = "hedra-avatar"
 
 POLL_INTERVAL_SECONDS = 5.0
-POLL_TIMEOUT_SECONDS = 120.0
+POLL_TIMEOUT_SECONDS = 300.0
+"""120s (the original value) was sized for the ~5s hook-only clips this
+client originally generated. This pipeline now sends a full narration
+(routinely 20-30s+) for lip-sync, and generation time scales with driven
+audio length — confirmed by direct reproduction (2026-08-20): a real
+~31s-audio job was still IN_PROGRESS/queued well past 120s. 300s is a
+safer floor; still bounded, so a genuinely stuck job doesn't hang
+forever."""
 REQUEST_TIMEOUT_SECONDS = 30.0
 DOWNLOAD_TIMEOUT_SECONDS = 60.0
 KEY_COOLDOWN_SECONDS = 60.0

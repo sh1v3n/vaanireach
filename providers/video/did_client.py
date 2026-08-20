@@ -48,7 +48,14 @@ logger = logging.getLogger("vaanireach.providers.did")
 DID_BASE_URL = "https://api.d-id.com"
 
 POLL_INTERVAL_SECONDS = 5.0
-POLL_TIMEOUT_SECONDS = 120.0
+POLL_TIMEOUT_SECONDS = 300.0
+"""120s (the original value) was sized for the ~5s hook-only clips this
+client originally generated. This pipeline now sends a full narration
+(routinely 20-30s+) for lip-sync — confirmed by direct reproduction
+(2026-08-20): a real ~31s-audio talk (tlk_ICN3oNoalM40dpO0wSuk8) was
+still status="created" (not even started) minutes past 120s. 300s is a
+safer floor; still bounded, so a genuinely stuck job doesn't hang
+forever."""
 REQUEST_TIMEOUT_SECONDS = 30.0
 DOWNLOAD_TIMEOUT_SECONDS = 60.0
 KEY_COOLDOWN_SECONDS = 60.0
