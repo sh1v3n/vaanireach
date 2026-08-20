@@ -75,22 +75,21 @@ def build_scene_image_prompt(scene: Scene) -> str:
 
 
 _FACT_AWARE_PROMPT_TEMPLATE = """You are a visual director for a short Indian government-notice \
-outreach video. For each numbered scene below, write ONE photorealistic B-roll image-generation \
-prompt that visually matches that scene's actual subject matter — e.g. a tax/finance notice should \
-show a tax office, a bank counter, someone reviewing a tax form; an agricultural scheme should show \
-farmers/farmland; a health scheme should show a clinic. Match the REAL content, not a generic default.
+outreach video. For each numbered scene below, write ONE short B-roll image-generation prompt \
+(SUBJECT AND SETTING ONLY, at most 15 words) that visually matches that scene's actual subject \
+matter — e.g. a tax/finance notice should show a tax office, a bank counter, someone reviewing a \
+tax form; an agricultural scheme should show farmers/farmland; a health scheme should show a \
+clinic. Match the REAL content, not a generic default.
 
-Rules for every prompt:
-- Photorealistic, natural lighting, respectful documentary style
-- No legible text, no signage, no watermark, no logos
-- Do NOT depict any real named individual, politician, or brand
-- Scenes that share a setting/subject should read as the same photographic series (visual continuity)
+Do NOT include lighting/style/quality words (photorealistic, natural lighting, documentary style,
+etc.) — those are added separately afterward. Do NOT depict any real named individual, politician, \
+brand, or legible text/signage. Keep every prompt terse: subject + setting, nothing else.
 
 Scenes (role: narration):
 {scenes_block}
 
-Return ONLY a JSON array of exactly {count} strings, one prompt per scene in the same order. \
-No markdown fences, no commentary.
+Return ONLY a JSON array of exactly {count} short strings (max 15 words each), one per scene in \
+the same order. No markdown fences, no commentary.
 """
 
 
