@@ -35,7 +35,6 @@ from __future__ import annotations
 
 import logging
 import os
-import textwrap
 from pathlib import Path
 
 from core.interfaces.visual_provider import VisualProvider
@@ -44,16 +43,13 @@ from core.models.media import MediaAsset
 from core.models.storyboard import Scene
 from providers.llm.gemini_client import GeminiAllKeysExhaustedError, GeminiManager
 from providers.visual.local_cache import LocalCache
+from providers.visual.placeholder import write_placeholder_card
 
 logger = logging.getLogger("vaanireach.providers.gemini_imagen_provider")
 
 IMAGEN_MODEL = "imagen-3.0-generate-002"
 IMAGE_CACHE_DIR = Path(os.environ.get("IMAGE_CACHE_DIR", "./local_cache/images"))
 IMAGE_ASPECT_RATIO = os.environ.get("IMAGE_ASPECT_RATIO", "9:16")  # vertical, matches the avatar hook clip
-
-_PLACEHOLDER_SIZE = (768, 1365)  # ~9:16, close enough for a fallback card
-_PLACEHOLDER_BG = (30, 41, 59)  # slate-800 — neutral, readable with white text
-_PLACEHOLDER_FG = (241, 245, 249)  # slate-100
 
 
 class GeminiImagenProvider(VisualProvider):
@@ -103,7 +99,7 @@ class GeminiImagenProvider(VisualProvider):
                 "generate_image: all Gemini keys exhausted for prompt=%r — using a local placeholder (%s)",
                 prompt[:80], exc,
             )
-            asset.storage_path = self._write_placeholder(asset.id, prompt)
+            asset.storage_path = write_placeholder_card(self.cache, asset.id, prompt)
             asset.provider_name = "local-placeholder"
             asset.metadata = {"cache_hit": False, "fallback": "gemini_keys_exhausted"}
 
@@ -149,26 +145,3 @@ class GeminiImagenProvider(VisualProvider):
             return generated[0].image.image_bytes
 
         return self.manager.call(_do, op_name=f"generate_image[{IMAGEN_MODEL}]")
-
-    # ---------------------------------------------------------------- Tier 2: local placeholder
-
-    def _write_placeholder(self, asset_id: str, prompt: str) -> str:
-        """Draws a plain slate-colored card with the (wrapped) prompt text
-        so the demo still has *something* in the right aspect ratio for
-        every B-roll slot, and reviewers can immediately tell it's a
-        stand-in rather than mistaking it for a real generation. Written
-        under the cache root but with a `_placeholder_` prefix so it can
-        never collide with (or be mistaken for) a real cached hit."""
-        from PIL import Image, ImageDraw  # local import: keep Pillow off the hot path when Imagen succeeds
-
-        out_path = self.cache.root / f"_placeholder_{asset_id}.jpg"
-        img = Image.new("RGB", _PLACEHOLDER_SIZE, color=_PLACEHOLDER_BG)
-        draw = ImageDraw.Draw(img)
-        wrapped = textwrap.fill(prompt, width=28)
-        text_bbox = draw.multiline_textbbox((0, 0), wrapped, spacing=10)
-        text_w, text_h = text_bbox[2] - text_bbox[0], text_bbox[3] - text_bbox[1]
-        x = max(0, (_PLACEHOLDER_SIZE[0] - text_w) // 2)
-        y = max(0, (_PLACEHOLDER_SIZE[1] - text_h) // 2)
-        draw.multiline_text((x, y), wrapped, fill=_PLACEHOLDER_FG, spacing=10, align="center")
-        img.save(out_path, format="JPEG", quality=85)
-        return str(out_path)

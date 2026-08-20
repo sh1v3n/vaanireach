@@ -59,7 +59,7 @@ except ImportError:  # pragma: no cover - only if rapidfuzz isn't installed
 
 logger = logging.getLogger("vaanireach.providers.gemini_provider")
 
-GEMINI_MODEL = "gemini-2.5-flash"
+GEMINI_MODEL = "gemini-3.6-flash"  # see providers/llm/gemini_client.py's DEFAULT_TEXT_MODEL docstring
 
 # claim_type values (free-form per the Claim model) that get objectively
 # checked against source facts with no LLM call — numbers/dates/etc. are

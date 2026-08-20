@@ -93,7 +93,7 @@ decisions).
    3-image-B-roll storyboard by hand.)*
 6. **Media Generation + Composition** — visual/audio assets are produced
    and composed into a final video with captions. ✅ implemented
-   (Gemini Imagen + Hedra/D-ID + Sarvam/edge-tts + MoviePy).
+   (Hugging Face + Hedra/D-ID + Sarvam/edge-tts + MoviePy).
 7. **Human Review + Approval** — an officer reviews source, generated
    content, and verification results, then Approves / Rejects /
    Regenerates / Edits. **Publication is never automatic.** ✅ Approve +
@@ -108,7 +108,8 @@ decisions).
 | Officer dashboard | Streamlit (`dashboard/app.py`) | The actual working front-end — in-process, no HTTP hop |
 | Frontend (`frontend/`) | Next.js (TypeScript, App Router) | Scaffolded for a future web dashboard; **not the one that runs today** |
 | Persistence | None yet | Everything lives in `st.session_state` for the dashboard session; SQLite/SQLModel remain unimplemented |
-| LLM | Google Gemini (`gemini-2.5-flash` + Imagen 3) | See [Media Generation](#media-generation) |
+| LLM | Google Gemini (`gemini-3.6-flash`) | See [Media Generation](#media-generation) |
+| B-roll images | Hugging Face Inference API | See [Media Generation](#media-generation) |
 | TTS | Sarvam AI → `edge-tts` fallback | See [Media Generation](#media-generation) |
 | Avatar / video composition | Hedra → D-ID → local fallback; MoviePy v2 | See [Media Generation](#media-generation) |
 | Local dev | Native Python venv | Runs directly on macOS/Linux/Windows, no Docker required |
@@ -129,14 +130,20 @@ Originally left open — see
 | LLM (facts / scripts / translation / semantic verification) | Google Gemini | Horizontal API-key rotation |
 | TTS | Sarvam AI → `edge-tts` | Horizontal rotation, then a free local fallback |
 | Talking-avatar hook | Hedra → D-ID → static local clip | 2 vendors, then a locally-generated placeholder |
-| B-roll images | Google Imagen 3 | Content-addressed local cache → key rotation → local placeholder card |
+| B-roll images | Hugging Face Serverless Inference API (free, no billing) | Content-addressed local cache → cold-start retry → local placeholder card |
 | Video composition | MoviePy v2 (bundles its own ffmpeg) | N/A — local, no external API |
+
+B-roll/avatar images were originally Google Imagen 3 — swapped to
+Hugging Face once it turned out Imagen requires a billing-enabled Google
+Cloud project even on free-tier Gemini API keys (every `generate_images`
+call 404'd, confirmed live). `GeminiImagenProvider` is kept in the
+codebase, just no longer wired in — see ADR-004.
 
 Every fallback tier exists so the dashboard degrades to *something free
 and local* instead of crashing when a vendor key is missing, rate-limited,
 or exhausted — see each provider's module docstring
 (`providers/llm/gemini_client.py`, `providers/tts/sarvam_tts_provider.py`,
-`providers/video/avatar_provider.py`, `providers/visual/gemini_imagen_provider.py`)
+`providers/video/avatar_provider.py`, `providers/visual/huggingface_provider.py`)
 for the exact tier order.
 
 **Known gap:** no concrete `SceneDirector`/`SceneRenderer` exists yet —
@@ -162,8 +169,8 @@ that layer. See ADR-004.
   ([`providers/tts/`](providers/tts/)).
 - **Talking-avatar generation** — Hedra → D-ID → local static fallback,
   3-tier resilience ([`providers/video/`](providers/video/)).
-- **B-roll image generation** — Google Imagen 3 with a content-addressed
-  local cache and a local placeholder fallback
+- **B-roll image generation** — Hugging Face's free Inference API with a
+  content-addressed local cache and a local placeholder fallback
   ([`providers/visual/`](providers/visual/)).
 - **Video composition** — MoviePy v2: avatar hook + Ken Burns B-roll +
   audio overlay + burned-in captions → MP4 + SRT
@@ -277,7 +284,7 @@ vaanireach/
 ├── agents/                per-stage agent packages (namespaces only, no logic yet)
 ├── core/                  domain models, interfaces, provenance, workflow helpers
 ├── providers/             LLM (Gemini), TTS (Sarvam/edge-tts), avatar (Hedra/D-ID),
-│                          visual (Gemini Imagen) provider implementations
+│                          visual (Hugging Face) provider implementations
 ├── rendering/             video composition interfaces + MoviePy adapter
 ├── fallback_assets/       the Tier-3 static avatar placeholder clip
 ├── local_cache/           generated B-roll image cache (gitignored, created at runtime)

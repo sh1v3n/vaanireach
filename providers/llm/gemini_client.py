@@ -38,7 +38,12 @@ logger = logging.getLogger("vaanireach.providers.gemini")
 
 T = TypeVar("T")
 
-DEFAULT_TEXT_MODEL = "gemini-2.5-flash"
+DEFAULT_TEXT_MODEL = "gemini-3.6-flash"
+"""`gemini-2.5-flash` was retired for new API keys (Google now returns a
+404 telling callers to switch) — confirmed live against the project's
+configured keys on 2026-08-20. Update this if Google retires
+`gemini-3.6-flash` in turn; `client.models.list()` shows what a given key
+currently has access to."""
 
 KEY_COOLDOWN_SECONDS = 60.0
 BACKOFF_BASE_SECONDS = 1.0

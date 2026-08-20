@@ -12,7 +12,7 @@ and — critically — Indian-language coverage would have been premature.
 ## Decision
 
 **LLM (fact extraction, script generation, translation, semantic
-verification): Google Gemini** (`gemini-2.5-flash`), via the
+verification): Google Gemini** (`gemini-3.6-flash`), via the
 `google-genai` SDK. One shared resilience primitive,
 [`providers/llm/gemini_client.py`](../../providers/llm/gemini_client.py)'s
 `GeminiManager`, backs everything: horizontal rotation across a pool of
@@ -25,9 +25,12 @@ implements `FactExtractor`, `ScriptGenerator`, `TranslationProvider`, and
 the semantic half of `VerificationEngine` on top of it — deterministic
 verification (`verify_deterministic`) is pure Python (regex +
 `rapidfuzz`), never touches the network, and so is never affected by key
-exhaustion. The same `GeminiManager` instance is reused by
-`GeminiImagenProvider` (Phase 4, see ADR-004) for image generation, so
-text and image calls share one key-rotation pool.
+exhaustion. `GeminiImagenProvider` (`providers/visual/gemini_imagen_provider.py`)
+originally reused this same `GeminiManager` instance for image
+generation too, sharing one key-rotation pool across text and image
+calls — since superseded by `HuggingFaceVisualProvider` for B-roll/avatar
+images specifically (Gemini Imagen needs a billing-enabled Google Cloud
+project even on free-tier API keys; see ADR-004).
 
 **TTS: Sarvam AI, with a hard vertical failover to `edge-tts`.**
 [`providers/tts/sarvam_tts_provider.py`](../../providers/tts/sarvam_tts_provider.py)'s
