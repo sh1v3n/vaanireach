@@ -398,7 +398,7 @@ class FfmpegVideoRenderer(VideoRenderer):
         language: LanguageCode,
     ) -> VideoAsset:
         """Composites an existing B-roll+audio video (compose_multi_scene's
-        own output) with a looping avatar PiP box (bottom-left, above the
+        own output) with a looping avatar PiP box (bottom-right, above the
         caption bar) and a burned-in caption track (rendering/adapters/
         caption_burner.py), in one ffmpeg pass. `-stream_loop -1` on the
         avatar input means a clip shorter than `duration_seconds` (e.g.
@@ -418,7 +418,7 @@ class FfmpegVideoRenderer(VideoRenderer):
 
         filter_complex = (
             f"[1:v]scale={PIP_WIDTH}:-2[avt];"
-            f"[0:v][avt]overlay=x={PIP_MARGIN}:y=H-{CAPTION_BAR_HEIGHT}-h-{PIP_MARGIN}:shortest=0[v1];"
+            f"[0:v][avt]overlay=x=W-w-{PIP_MARGIN}:y=H-{CAPTION_BAR_HEIGHT}-h-{PIP_MARGIN}:shortest=0[v1];"
             f"[v1][2:v]overlay=x=0:y=0:shortest=0[vout]"
         )
         cmd = [
