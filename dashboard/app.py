@@ -69,7 +69,7 @@ from providers.llm.gemini_client import GeminiAllKeysExhaustedError, GeminiManag
 from providers.llm.gemini_provider import GeminiLLMProvider  # noqa: E402
 from providers.tts.sarvam_tts_provider import SarvamTTSProvider  # noqa: E402
 from providers.video.avatar_provider import AvatarFailoverProvider  # noqa: E402
-from providers.visual.huggingface_provider import HuggingFaceVisualProvider  # noqa: E402
+from providers.visual.pollinations_visual_provider import PollinationsVisualProvider  # noqa: E402
 from rendering.adapters.moviepy_video_renderer import MoviePyVideoRenderer  # noqa: E402
 
 # --------------------------------------------------------------------------- constants
@@ -120,7 +120,7 @@ class Providers:
     llm: GeminiLLMProvider | None
     tts: SarvamTTSProvider
     avatar: AvatarFailoverProvider
-    visual: HuggingFaceVisualProvider
+    visual: PollinationsVisualProvider
     renderer: MoviePyVideoRenderer
     init_error: str | None
 
@@ -128,21 +128,24 @@ class Providers:
 @st.cache_resource(show_spinner=False)
 def get_providers() -> Providers:
     """Constructed once per process (not per rerun) — see module
-    docstring. TTS/Avatar/Visual all tolerate missing API keys internally
-    (they fall back to edge-tts / the local Tier-3 clip / a local
-    placeholder card respectively), but `GeminiManager` raises if
-    literally no Gemini key is configured anywhere, which is fatal for
-    this dashboard (fact extraction/script generation have no fallback).
-    That's caught here and surfaced as a normal `st.error`, not an
-    unhandled crash.
+    docstring. TTS/Avatar/Visual all tolerate missing/unavailable
+    providers internally (they fall back to edge-tts / the local Tier-3
+    clip / a local placeholder card respectively), but `GeminiManager`
+    raises if literally no Gemini key is configured anywhere, which is
+    fatal for this dashboard (fact extraction/script generation have no
+    fallback). That's caught here and surfaced as a normal `st.error`,
+    not an unhandled crash.
 
-    B-roll/avatar-source image generation is Hugging Face's free
-    Serverless Inference API (`HuggingFaceVisualProvider`), not Gemini
-    Imagen — Google requires a billing-enabled Cloud project for Imagen
-    access even on ostensibly free-tier API keys, confirmed live against
-    every Gemini key configured for this project (every call 404'd with
-    "not supported for predict"). See
-    providers/visual/huggingface_provider.py's module docstring."""
+    B-roll/avatar-source image generation is Pollinations.ai
+    (`PollinationsVisualProvider`) — free and keyless, no billing at
+    all. Two prior providers were tried and dropped for this exact
+    reason: Google Imagen 3 requires a billing-enabled Cloud project
+    even on free-tier Gemini keys (every call 404'd with "not supported
+    for predict"), and Hugging Face's free `hf-inference` tier /
+    Together AI (one of the backends its router can pick) both started
+    gating image generation behind a billing/deposit requirement too.
+    See providers/visual/pollinations_visual_provider.py's module
+    docstring."""
     try:
         gemini_manager = GeminiManager()
     except ValueError as exc:
@@ -151,7 +154,7 @@ def get_providers() -> Providers:
             llm=None,
             tts=SarvamTTSProvider(),
             avatar=AvatarFailoverProvider(),
-            visual=HuggingFaceVisualProvider(),
+            visual=PollinationsVisualProvider(),
             renderer=MoviePyVideoRenderer(),
             init_error=str(exc),
         )
@@ -160,7 +163,7 @@ def get_providers() -> Providers:
         llm=GeminiLLMProvider(gemini_manager),
         tts=SarvamTTSProvider(),
         avatar=AvatarFailoverProvider(),
-        visual=HuggingFaceVisualProvider(),
+        visual=PollinationsVisualProvider(),
         renderer=MoviePyVideoRenderer(),
         init_error=None,
     )
@@ -291,7 +294,7 @@ def generate_broll_prompts(manager: GeminiManager, narration_text: str, audience
 
 def get_avatar_source_image(providers: Providers) -> str:
     """The presenter portrait Hedra/D-ID animate for the hook clip.
-    Generated through the same HuggingFaceVisualProvider as the B-roll —
+    Generated through the same PollinationsVisualProvider as the B-roll —
     its LocalCache means this only ever hits the network once across the
     dashboard's lifetime, not once per render."""
     placeholder_scene = Scene(

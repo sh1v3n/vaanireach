@@ -15,7 +15,7 @@ decision but a record of what was considered.
 | LLM (facts/scripts/translation/semantic verification) | Google Gemini (`gemini-3.6-flash`) | Horizontal key rotation across `GEMINI_API_KEYS` |
 | TTS | Sarvam AI → `edge-tts` | Horizontal rotation, then a hard local fallback |
 | Talking-avatar hook | Hedra → D-ID → static local clip | Horizontal rotation per vendor, then a 3rd local fallback tier |
-| B-roll images | Hugging Face Inference API (`stabilityai/stable-diffusion-3-medium-diffusers`) | Local cache → cold-start retry → local placeholder card |
+| B-roll images | Pollinations.ai (free, keyless REST API) | Local cache → retry with backoff → local placeholder card |
 | Video composition | MoviePy v2 | N/A (local, no external API) |
 | Officer review UI | Streamlit (`dashboard/app.py`) | In-process, calls providers directly |
 
@@ -38,10 +38,11 @@ without touching `core/`, `agents/`, or `backend/`.
 - **FFmpeg-based motion graphics** — chosen for final composition (via
   MoviePy, which wraps ffmpeg) — see ADR-005.
 - **Image + voice → MP4** — the actual shape of the B-roll pipeline:
-  Hugging Face-generated stills + Ken Burns motion + TTS voiceover
-  (originally Imagen 3-generated — swapped once Imagen turned out to
-  require a billing-enabled Google Cloud project even on free-tier keys;
-  see ADR-004).
+  Pollinations.ai-generated stills + Ken Burns motion + TTS voiceover.
+  Tried and dropped twice before landing here: Imagen 3 (needs a
+  billing-enabled Google Cloud project even on free-tier keys), then
+  Hugging Face's free Inference API (also started gating image
+  generation behind billing/deposit) — see ADR-004's two revision notes.
 - **Remotion** — considered, not chosen (Python-native MoviePy fit the
   rest of the stack better).
 - **LTX / Hedra / other AI video or avatar APIs** — Hedra chosen as Tier 1
@@ -52,7 +53,7 @@ without touching `core/`, `agents/`, or `backend/`.
 - **3D/avatar-based generation** — the avatar hook (`SceneType.AVATAR`)
   is implemented; true 3D scenes (`SceneType.THREE_D`) remain
   experimental/unimplemented.
-- **Hybrid** — what shipped: Gemini (text) + Hugging Face (images) +
+- **Hybrid** — what shipped: Gemini (text) + Pollinations.ai (images) +
   Sarvam/edge-tts (audio) + Hedra/D-ID (avatar) + MoviePy (composition).
 
 ## What this means for implementers
