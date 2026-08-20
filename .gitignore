@@ -1,0 +1,38 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- Env / secrets ---
+.env
+.env.local
+*.pem
+
+# --- Databases ---
+*.db
+*.sqlite3
+
+# --- Node / frontend ---
+node_modules/
+.next/
+out/
+dist/
+.eslintcache
+
+# --- Generated media (never commit generated assets) ---
+sample_data/generated/
+**/generated_output/
+*.mp4
+*.wav
+*.mp3
+
+# --- OS / editor ---
+.DS_Store
+.vscode/
+.idea/

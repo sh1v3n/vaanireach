@@ -1,0 +1,28 @@
+OFFICE OF THE DISTRICT COLLECTORATE, RIVERBEND DISTRICT
+PUBLIC NOTICE — "KISAN SAHAYATA YOJANA" (FICTIONAL SAMPLE SCHEME)
+
+This is a synthetic sample document for VaaniReach development and
+testing only. It does not describe a real government scheme.
+
+1. SCHEME NAME: Kisan Sahayata Yojana (Farmer Support Scheme)
+
+2. ELIGIBILITY: All small and marginal farmers holding less than 2
+   hectares of agricultural land within Riverbend District are eligible
+   to apply.
+
+3. BENEFIT AMOUNT: Eligible farmers will receive a one-time direct
+   benefit transfer of ₹2,000 (Rupees Two Thousand only) per applicant.
+
+4. APPLICATION DEADLINE: All applications must be submitted on or before
+   31 March 2026.
+
+5. HOW TO APPLY: Applicants may register at their nearest Common Service
+   Centre or online at www.example-scheme.gov.in (sample URL — not a
+   real website).
+
+6. HELPLINE: For queries, contact the District Agriculture Office at
+   1800-000-0000 (sample toll-free number) between 10 AM and 5 PM,
+   Monday to Saturday.
+
+7. ISSUED BY: Office of the District Collector, Riverbend District.
+   Date of Issue: 15 January 2026.
