@@ -33,6 +33,7 @@ from core.models.fact import SourceFact
 from core.models.media import VideoAsset
 from core.models.storyboard import Scene
 from providers.llm.groq_provider import GroqLLMProvider
+from providers.narrative.dynamic_narration import generate_dynamic_narration
 from providers.narrative.template_story_director import TemplateStoryDirector
 from providers.tts.sarvam_tts_provider import SarvamTTSProvider
 from providers.translation.groq_translation_provider import GroqTranslationProvider, translate_scenes
@@ -90,18 +91,34 @@ def generate_language_video(
     tts_provider: SarvamTTSProvider | None = None,
     avatar_provider: AvatarFailoverProvider | None = None,
     visual_provider: CloudflareVisualProvider | None = None,
+    precomputed_scenes: list[Scene] | None = None,
 ) -> LanguageVideoResult:
     """image_paths must already be rendered (same order as
-    story_director.plan_narrative_arc(facts)'s scenes) — this function
-    doesn't regenerate images, it only varies narration/audio/timing per
-    language, per the module docstring.
+    story_director.plan_narrative_arc(facts)'s scenes, or as
+    precomputed_scenes if given) — this function doesn't regenerate
+    images, it only varies narration/audio/timing per language, per the
+    module docstring.
+
+    precomputed_scenes lets a caller (run_full_pipeline) supply
+    already-planned, English-language scenes — e.g. ones that have been
+    through generate_dynamic_narration's LLM rewrite + per-scene fact
+    verification — instead of this function silently recomputing fresh
+    deterministic scenes from story_director.plan_narrative_arc every
+    call, which would discard that rewrite. Each call gets its own deep
+    copy (model_copy) before any mutation, the same copy-on-write
+    discipline translate_scenes already uses, so concurrent per-language
+    calls sharing one precomputed_scenes list never step on each other.
+    Omitted (the default), this behaves exactly as before.
 
     Avatar PiP overlay + caption burn-in are ALWAYS attempted (required
     MVP scope — see the Global Constraints doc referenced above), never
     conditionally skipped. Only a genuine runtime failure in that step
     falls back to the plain captioned-B-roll video; that fallback is a
     reliability net, not a design option, and it logs loudly."""
-    _, scenes = story_director.plan_narrative_arc(facts)
+    if precomputed_scenes is not None:
+        scenes = [s.model_copy() for s in precomputed_scenes]
+    else:
+        _, scenes = story_director.plan_narrative_arc(facts)
     if len(scenes) != len(image_paths):
         raise ValueError(
             f"image_paths has {len(image_paths)} entries but plan_narrative_arc produced {len(scenes)} scenes — "
@@ -197,6 +214,16 @@ def run_full_pipeline(
     captions, composition) is this pipeline's own existing, tested code,
     unchanged.
 
+    Narration is drafted dynamically per scene (providers/narrative/
+    dynamic_narration.py's generate_dynamic_narration), grounded ONLY in
+    that scene's own cited facts and independently re-verified against
+    the real fact ledger before acceptance — replacing
+    TemplateStoryDirector's hardcoded per-role sentence templates (e.g.
+    the "Farmers of X" bug: a fixed audience assumption with nothing to
+    do with a tax/health/education document's real content). Falls back
+    to those deterministic templates, per scene, on any LLM failure or
+    failed verification — this function never raises for that reason.
+
     B-roll images are rendered ONCE (shared across every language, per
     generate_language_video's own language-independence principle) using
     fact-aware prompts when possible (rendering/adapters/
@@ -205,7 +232,13 @@ def run_full_pipeline(
     not the static per-role templates' hardcoded farmer/agriculture
     scenes. Falls back to those static templates automatically if the
     fact-aware LLM call fails; this function never raises for that
-    reason, only for zero-facts-extracted (nothing to make a video from)."""
+    reason, only for zero-facts-extracted (nothing to make a video from).
+
+    Both dynamic passes (narration, then B-roll prompts, in that order —
+    B-roll prompts are grounded in the FINAL narration text) run ONCE, in
+    English, before the per-language loop; every language then
+    translates from this same narration, exactly like the deterministic
+    baseline (StoryDirector's language-independence principle)."""
     llm = llm_provider or GroqLLMProvider()
     director = story_director or TemplateStoryDirector()
     trans = translator or GroqTranslationProvider()
@@ -221,6 +254,7 @@ def run_full_pipeline(
         )
 
     _, scenes = director.plan_narrative_arc(facts)
+    scenes = generate_dynamic_narration(scenes, facts, project_id=project_id)
     image_paths = render_scene_images(scenes, visual, project_id=project_id)
 
     return [
@@ -228,6 +262,7 @@ def run_full_pipeline(
             facts, image_paths, story_director=director, translator=trans,
             target_language=lang, project_id=project_id,
             tts_provider=tts_provider, avatar_provider=avatar_provider, visual_provider=visual,
+            precomputed_scenes=scenes,
         )
         for lang in languages
     ]

@@ -176,7 +176,12 @@ _ROLE_TRANSITION_OUT: dict[NarrativeRole, TransitionType] = {
 }
 
 
-def _estimate_duration(narration: str) -> float:
+def estimate_narration_duration(narration: str) -> float:
+    """Public so other narration-producing code (e.g.
+    dynamic_narration.py's LLM-rewritten lines) can derive a scene's
+    pre-TTS duration estimate the same way this module's own templates
+    do — the real per-language duration is always overwritten later by
+    the actual TTS audio length; this is only ever a placeholder."""
     word_count = len(narration.split())
     return max(MIN_SCENE_DURATION_SECONDS, word_count / WORDS_PER_SECOND)
 
@@ -246,7 +251,7 @@ class TemplateStoryDirector(StoryDirector):
                 narrative_role=role,
                 narration_segment_text=narration,
                 source_fact_ids=[f.id for f in cited],
-                duration_seconds=_estimate_duration(narration),
+                duration_seconds=estimate_narration_duration(narration),
                 visual_concept=_visual_concept(role, narration),
             )
             scenes.append(scene)
