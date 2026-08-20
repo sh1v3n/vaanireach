@@ -1,8 +1,12 @@
 # VaaniReach — Architecture
 
-> **Status: Phase 0 (architecture only).** Nothing described below as a
-> "layer" or "agent" has business logic implemented yet — see
-> [`README.md`](../README.md) for what actually runs today.
+> **Status: Phases 0-5 built.** The Document Intelligence → Fact Ledger →
+> Script Generation → Verification → TTS → Avatar → B-Roll → Video
+> Composition pipeline runs end-to-end, driven in-process by the
+> Streamlit Officer Review Dashboard (`dashboard/app.py`) — see
+> [`README.md`](../README.md) for exactly what's implemented vs. still a
+> stub (the FastAPI `backend/` routes and the `agents/`/orchestrator
+> layer remain unimplemented; the dashboard bypasses both).
 
 ## Problem
 
@@ -85,18 +89,27 @@ answer "where did this generated statement come from?" See
 
 ### Agentic Orchestration
 Agents (`agents/*`) exist only where a real decision or tool selection is
-needed — not agents-for-agents-sake. The `WorkflowEngine` sequences them:
+needed — not agents-for-agents-sake. The intended design has a
+`WorkflowEngine` sequence them:
 
 ```
 extract facts → detect critical facts → generate script → verify
     → if failed: regenerate → verify again → proceed
 ```
 
-and emits `WorkflowEvent`s for an execution-trace dashboard. Event
-messages are concise, operational, user-facing strings — **never raw
+and emit `WorkflowEvent`s for an execution-trace dashboard, with event
+messages as concise, operational, user-facing strings — **never raw
 model chain-of-thought**. See
 [`core/interfaces/orchestrator.py`](../core/interfaces/orchestrator.py) and
 [ADR-003](decisions/ADR-003-agent-orchestration.md).
+
+**Current reality:** no `WorkflowEngine` or `agents/*` logic is
+implemented yet. `dashboard/app.py` runs exactly this loop (verify →
+regenerate-once-on-blocking-failure → proceed) by calling
+`GeminiLLMProvider` directly and holding state in `st.session_state`
+instead of emitting `WorkflowEvent`s. It is a faithful stand-in for the
+loop's *behavior*, not for the orchestration/event-trace *architecture*
+described above — that gap is still open.
 
 ### The Visual Strategy Layer (Scene Director → Scene Renderer → Provider)
 
@@ -118,27 +131,41 @@ Three independently swappable layers:
 3. **Provider layer** (`providers/visual`, `providers/video`,
    `rendering/adapters`) — where a concrete `SceneRenderer` would
    eventually call a `VisualProvider` / `VideoGenerationProvider` /
-   `VideoRenderer`. Entirely unselected — see
+   `VideoRenderer`. Providers are now selected and implemented (Gemini
+   Imagen 3, Hedra/D-ID) — see
    [ADR-004](decisions/ADR-004-media-generation-abstraction.md),
    [ADR-005](decisions/ADR-005-video-rendering.md),
-   [ADR-006](decisions/ADR-006-provider-selection.md).
+   [ADR-006](decisions/ADR-006-provider-selection.md). **`SceneDirector`
+   and `SceneRenderer` themselves remain unimplemented** — nothing calls
+   `choose_scene_type`/`plan_storyboard`, and `SceneRendererRegistry`
+   still resolves zero renderers. `dashboard/app.py` calls the concrete
+   providers directly, constructing `Scene` objects by hand, as a
+   documented hackathon-scope shortcut around this layer.
 
 See [`core/interfaces/scene_director.py`](../core/interfaces/scene_director.py)
 and [`core/interfaces/scene_renderer.py`](../core/interfaces/scene_renderer.py).
 
 ### Video Composition
 `VideoRenderer` takes scenes + audio + captions + visual assets +
-transitions + timing + branding and produces MP4/SRT/VTT. Implementation
-(FFmpeg-based, Remotion, MoviePy, or otherwise) is deliberately undecided.
-See [`rendering/interfaces/video_renderer.py`](../rendering/interfaces/video_renderer.py).
+transitions + timing + branding and produces MP4/SRT/VTT. Implemented on
+MoviePy v2 — [`MoviePyVideoRenderer`](../rendering/adapters/moviepy_video_renderer.py),
+see [ADR-005](decisions/ADR-005-video-rendering.md). See
+[`rendering/interfaces/video_renderer.py`](../rendering/interfaces/video_renderer.py)
+for the abstract contract.
 
 ### Human Review Dashboard
-Not built in Phase 0 (only a placeholder route exists in `frontend/`). Its
-intended design: an officer reviews the Source (document, pages, facts),
-Generated Content (scripts, translations, storyboard, final video), and
-Verification (verified/contradicted/unverified claims with source
-references), then takes a Final Action — `APPROVE / REJECT / REGENERATE /
-EDIT`. **Publication is never automatic.**
+Built as a Streamlit app — [`dashboard/app.py`](../dashboard/app.py) (the
+`frontend/` Next.js route referenced here originally remains an
+unbuilt placeholder; the Streamlit dashboard is the dashboard that
+actually runs). An officer reviews the Source (pasted notice text, the
+Fact Ledger), Generated Content (per-language scripts, the final video),
+and Verification (verified/contradicted/unverified claims with
+explanations), then takes a Final Action: **Approve & Render** (produces
+a preview video, does not publish anything) or **Regenerate** a
+language's script. `REJECT`/`EDIT` from the original design aren't built.
+**Publication is never automatic** — nothing in the dashboard uploads or
+publishes the rendered video anywhere; it only offers it for local
+download.
 
 ## Non-goals for this hackathon
 
@@ -146,4 +173,5 @@ EDIT`. **Publication is never automatic.**
 - No Docker requirement — native Python venv + npm is the primary path
   (`docker-compose.yml` is an optional convenience only).
 - No multi-tenant auth system — a single placeholder dev identity is used.
-- No concrete AI/media provider is selected or called anywhere in code.
+- No `SceneDirector`/`SceneRenderer` or `WorkflowEngine`/`agents/*`
+  implementation — see the sections above for what stands in for them.

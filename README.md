@@ -2,12 +2,15 @@
 
 **Team:** non technical
 
-> **Current status: architecture phase.** This repository defines the
-> system's data models, interfaces, and API contract. **No document
-> processing, translation, TTS, or video generation pipeline is
-> implemented or runnable yet.** Every API route except `GET /health`
-> returns HTTP 501 by design — see [Current Status](#current-status) below
-> for exactly what does and doesn't work today.
+> **Current status: end-to-end pipeline running via the Streamlit
+> dashboard.** Paste an English notice into `dashboard/app.py` and it
+> extracts facts, drafts + verifies scripts in 4 Indian languages, and
+> renders a talking-avatar + B-roll video with captions — see
+> [Current Status](#current-status) below for exactly what's real and
+> what's still a stub. The FastAPI `backend/` app is a separate,
+> **not-yet-wired-up** front-end: every route on it except `GET /health`
+> still returns HTTP 501, because the dashboard talks to the provider
+> layer in-process and never calls it.
 
 ## Problem
 
@@ -29,8 +32,10 @@ finally a video is composed — with **human approval required before
 anything is published.** Anything that can't be verified is flagged, not
 invented.
 
-The video-generation technology itself is **deliberately undecided** —
-see [Future Media-Generation Options](#future-media-generation-options).
+The video-generation technology was **deliberately left undecided at
+first** (see [ADR-004](docs/decisions/ADR-004-media-generation-abstraction.md)),
+then chosen once the interfaces existed — see
+[Media Generation](#media-generation) below.
 
 ## Architecture
 
@@ -57,8 +62,8 @@ Full write-up: [`docs/architecture.md`](docs/architecture.md). Also see
 [`docs/workflow.md`](docs/workflow.md) (execution trace + verify/regenerate
 loop), [`docs/data-model.md`](docs/data-model.md) (entity relationships),
 [`docs/api-contract.md`](docs/api-contract.md) (endpoint contracts), and
-[`docs/decisions/`](docs/decisions/) (ADRs, including the deferred
-media-provider decisions).
+[`docs/decisions/`](docs/decisions/) (ADRs, including the media-provider
+decisions).
 
 ### Key architectural principle
 
@@ -71,73 +76,122 @@ media-provider decisions).
 
 1. **Document Intelligence** — ingest PDF/DOCX/image sources, extract
    page-level text/headings/tables with page-and-span provenance.
+   *(⚠️ plain-text only today — see [Current Status](#current-status).)*
 2. **Source Fact Ledger** — structured, provenance-tagged facts (amounts,
    dates, deadlines, names, locations, eligibility, …) become the single
-   source of truth.
+   source of truth. ✅ implemented (Gemini-backed extraction).
 3. **Script Generation + Translation** — narration grounded in the
    ledger, generated for at least 3 Indian languages (extensible to more).
+   ✅ implemented (4 languages ship in the dashboard).
 4. **Verification** — every generated claim is checked
    deterministically or semantically against the ledger; critical
-   unverified/contradicted claims block publication.
+   unverified/contradicted claims block publication. ✅ implemented.
 5. **Storyboard / Scene Planning** — a Scene Director chooses *what*
    visual representation fits each fact (map, infographic, animated
-   number, …), independent of *which* vendor renders it.
+   number, …), independent of *which* vendor renders it. *(⚠️ not
+   implemented — the dashboard builds a fixed avatar-hook +
+   3-image-B-roll storyboard by hand.)*
 6. **Media Generation + Composition** — visual/audio assets are produced
-   and composed into a final video with captions.
+   and composed into a final video with captions. ✅ implemented
+   (Gemini Imagen + Hedra/D-ID + Sarvam/edge-tts + MoviePy).
 7. **Human Review + Approval** — an officer reviews source, generated
    content, and verification results, then Approves / Rejects /
-   Regenerates / Edits. **Publication is never automatic.**
+   Regenerates / Edits. **Publication is never automatic.** ✅ Approve +
+   Regenerate implemented in the dashboard; Reject/Edit are not.
 
 ## Technology stack
 
 | Layer | Choice | Why |
 |---|---|---|
-| Backend | Python 3.12 + FastAPI + Pydantic v2 | Fast to build, strong typing, matches the domain-model-first approach |
-| Domain models | Plain Pydantic (`core/models/`) | Framework-agnostic — reusable by agents, tests, a future CLI |
-| Persistence (Phase 1+) | SQLite via SQLModel | Zero-setup local dev; SQLModel unifies Pydantic + SQLAlchemy |
-| Frontend | Next.js (TypeScript, App Router) | Standard React tooling for the future Review Dashboard |
-| Media generation | **Undecided** | See [Future Media-Generation Options](#future-media-generation-options) |
-| Local dev | Native Python venv + npm | Runs directly on macOS/Linux, no Docker required |
+| Backend | Python 3.12 + FastAPI + Pydantic v2 | Fast to build, strong typing, matches the domain-model-first approach — **still 501 stubs, not used by the dashboard** |
+| Domain models | Plain Pydantic (`core/models/`) | Framework-agnostic — reused by providers, the dashboard, tests |
+| Officer dashboard | Streamlit (`dashboard/app.py`) | The actual working front-end — in-process, no HTTP hop |
+| Frontend (`frontend/`) | Next.js (TypeScript, App Router) | Scaffolded for a future web dashboard; **not the one that runs today** |
+| Persistence | None yet | Everything lives in `st.session_state` for the dashboard session; SQLite/SQLModel remain unimplemented |
+| LLM | Google Gemini (`gemini-2.5-flash` + Imagen 3) | See [Media Generation](#media-generation) |
+| TTS | Sarvam AI → `edge-tts` fallback | See [Media Generation](#media-generation) |
+| Avatar / video composition | Hedra → D-ID → local fallback; MoviePy v2 | See [Media Generation](#media-generation) |
+| Local dev | Native Python venv | Runs directly on macOS/Linux/Windows, no Docker required |
 
 No Kubernetes, no cloud deployment, no infrastructure added for its own
 sake — the system is designed to run locally first.
 
-## Future media-generation options
+## Media generation
 
-Deliberately left open — see
+Originally left open — see
 [`docs/media-provider-strategy.md`](docs/media-provider-strategy.md) and
 [ADR-004](docs/decisions/ADR-004-media-generation-abstraction.md) /
 [ADR-005](docs/decisions/ADR-005-video-rendering.md) /
-[ADR-006](docs/decisions/ADR-006-provider-selection.md). Candidates under
-consideration (none selected, none referenced in code):
-FFmpeg-based motion graphics, image+voice→MP4, Remotion, LTX, Hedra, other
-image/video generation APIs, local/open-source models, 3D/avatar-based
-generation, or a hybrid approach.
+[ADR-006](docs/decisions/ADR-006-provider-selection.md) — then decided:
+
+| Concern | Provider(s) | Resilience shape |
+|---|---|---|
+| LLM (facts / scripts / translation / semantic verification) | Google Gemini | Horizontal API-key rotation |
+| TTS | Sarvam AI → `edge-tts` | Horizontal rotation, then a free local fallback |
+| Talking-avatar hook | Hedra → D-ID → static local clip | 2 vendors, then a locally-generated placeholder |
+| B-roll images | Google Imagen 3 | Content-addressed local cache → key rotation → local placeholder card |
+| Video composition | MoviePy v2 (bundles its own ffmpeg) | N/A — local, no external API |
+
+Every fallback tier exists so the dashboard degrades to *something free
+and local* instead of crashing when a vendor key is missing, rate-limited,
+or exhausted — see each provider's module docstring
+(`providers/llm/gemini_client.py`, `providers/tts/sarvam_tts_provider.py`,
+`providers/video/avatar_provider.py`, `providers/visual/gemini_imagen_provider.py`)
+for the exact tier order.
+
+**Known gap:** no concrete `SceneDirector`/`SceneRenderer` exists yet —
+`dashboard/app.py` calls these providers directly rather than through
+that layer. See ADR-004.
 
 ## Current status
 
-**Implemented in Phase 0 (this commit):**
-- Full repository structure, documentation, and ADRs.
+**Implemented and runnable today:**
+- Full repository structure, documentation, and ADRs (Phase 0).
 - Real Pydantic domain models for all 17 core entities +
   provenance/source-span models ([`core/models/`](core/models/),
   [`core/provenance/`](core/provenance/)).
 - Real abstract interfaces for every pipeline stage
   ([`core/interfaces/`](core/interfaces/),
-  [`rendering/interfaces/`](rendering/interfaces/)) — zero concrete
-  providers referenced anywhere.
-- A FastAPI app with all 12 contracted routes declared using those
-  domain models — **every route except `/health` returns HTTP 501.**
+  [`rendering/interfaces/`](rendering/interfaces/)).
+- **Fact extraction, multilingual script generation, and verification**
+  — Gemini-backed, with deterministic (regex/`rapidfuzz`) + semantic
+  verification and an automatic regenerate-on-failure loop
+  ([`providers/llm/`](providers/llm/)).
+- **Text-to-speech** — Sarvam AI with an `edge-tts` fallback, plus
+  hook/body audio slicing for the avatar + B-roll split
+  ([`providers/tts/`](providers/tts/)).
+- **Talking-avatar generation** — Hedra → D-ID → local static fallback,
+  3-tier resilience ([`providers/video/`](providers/video/)).
+- **B-roll image generation** — Google Imagen 3 with a content-addressed
+  local cache and a local placeholder fallback
+  ([`providers/visual/`](providers/visual/)).
+- **Video composition** — MoviePy v2: avatar hook + Ken Burns B-roll +
+  audio overlay + burned-in captions → MP4 + SRT
+  ([`rendering/adapters/`](rendering/adapters/)).
+- **Officer Review Dashboard** — a working Streamlit app
+  ([`dashboard/app.py`](dashboard/app.py)) that runs the whole pipeline
+  above in-process: paste a notice → review the Fact Ledger and
+  per-language verified scripts → Approve & Render → download the MP4 +
+  SRT.
 - Real file-upload validation/filename-sanitization helpers
-  ([`backend/app/security/`](backend/app/security/)).
-- A minimal, non-functional Next.js scaffold for the future dashboard.
+  ([`backend/app/security/`](backend/app/security/)) — not yet exercised
+  by any live upload path.
 
 **Not implemented yet (honest — do not assume otherwise):**
-- No document parsing, OCR, or fact extraction runs.
-- No script generation, translation, or verification runs.
-- No storyboard planning, media generation, or video composition runs.
-- No dashboard UI beyond a placeholder page.
-- No database tables/persistence layer (SQLite engine is wired but no
-  tables exist yet).
+- **The FastAPI `backend/` app is unchanged since Phase 0** — every route
+  except `/health` still returns HTTP 501. The dashboard does not call it.
+- **No document parsing beyond plain text** — no PDF/DOCX/image ingestion
+  or OCR; the dashboard takes pasted text or a `.txt` upload only.
+- **No `SceneDirector`/`SceneRenderer`** — nothing chooses a `SceneType`
+  per fact or dispatches through `SceneRendererRegistry`; the dashboard
+  calls the visual/avatar/rendering providers directly. See ADR-004.
+- **No `WorkflowEngine` or `agents/*` logic** — the dashboard sequences
+  the pipeline itself and holds state in `st.session_state` rather than
+  emitting `WorkflowEvent`s for an execution-trace dashboard.
+- No database tables/persistence layer — everything lives in the
+  Streamlit session; nothing survives a dashboard restart.
+- The Next.js `frontend/` is still the Phase 0 placeholder — it is not
+  the dashboard described above.
 - No GitHub Issues were created as part of this task — see
   [`docs/TODO.md`](docs/TODO.md) for the phased backlog instead.
 
@@ -145,7 +199,25 @@ generation, or a hybrid approach.
 
 No Docker required — everything runs natively.
 
+### Dashboard (the actual working pipeline)
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+cp .env.example .env             # fill in GEMINI_API_KEYS at minimum — see dashboard/README.md
+streamlit run dashboard/app.py
+```
+
+`GEMINI_API_KEYS` is the one hard requirement (fact extraction/script
+generation have no fallback). `SARVAM_API_KEYS`/`HEDRA_API_KEYS`/
+`DID_API_KEYS` are all optional — every one of those providers degrades
+to a free local fallback if unset. See [`dashboard/README.md`](dashboard/README.md).
+
 ### Backend
+
+Independent of the dashboard above — every route except `/health` is
+still a Phase 0 HTTP 501 stub (see [Current Status](#current-status)).
 
 ```bash
 cd backend
@@ -178,6 +250,12 @@ cd backend && source .venv/bin/activate
 PYTHONPATH=".:.." pytest ../tests
 ```
 
+Includes real functional coverage now, not just model/stub sanity checks
+— e.g. [`tests/test_phase4_renderer_smoke.py`](tests/test_phase4_renderer_smoke.py)
+feeds a dummy avatar clip + 3 dummy images + a dummy audio track through
+`MoviePyVideoRenderer` (both its direct and generic-ABC entry points) and
+asserts a real, playable MP4 comes out with no codec errors.
+
 ### One-shot setup
 
 ```bash
@@ -193,13 +271,17 @@ currently work.
 ```
 vaanireach/
 ├── docs/                 architecture, workflow, data model, API contract, ADRs
+├── dashboard/             Streamlit Officer Review Dashboard — the working pipeline UI
 ├── frontend/              Next.js scaffold (not functional yet)
 ├── backend/               FastAPI app — routes are 501 stubs
 ├── agents/                per-stage agent packages (namespaces only, no logic yet)
 ├── core/                  domain models, interfaces, provenance, workflow helpers
-├── providers/             provider adapter placeholders (llm/translation/tts/visual/video/storage/mcp)
-├── rendering/             video composition interfaces + adapter placeholder
-├── tests/                 model + route-stub tests
+├── providers/             LLM (Gemini), TTS (Sarvam/edge-tts), avatar (Hedra/D-ID),
+│                          visual (Gemini Imagen) provider implementations
+├── rendering/             video composition interfaces + MoviePy adapter
+├── fallback_assets/       the Tier-3 static avatar placeholder clip
+├── local_cache/           generated B-roll image cache (gitignored, created at runtime)
+├── tests/                 model + route-stub + renderer smoke tests
 ├── scripts/                setup_dev.sh, check_env.py
 └── sample_data/           synthetic sample document for future ingestion testing
 ```
@@ -209,12 +291,14 @@ vaanireach/
 - API keys live only in environment variables (`.env`, from
   `.env.example` — never committed).
 - Uploaded files are validated by type and size and given sanitized,
-  collision-resistant storage paths.
-- Provider timeouts and rate limiting are documented design requirements
-  (see [`core/security.py`](core/security.py)) for Phase 1+ — not yet
-  enforced since no provider calls exist yet.
+  collision-resistant storage paths (backend upload path only — not yet
+  exercised by the dashboard, which takes text directly).
+- Provider calls (Gemini/Sarvam/Hedra/D-ID) implement their own
+  timeout/retry/key-rotation resilience — see each provider's module
+  docstring under `providers/`. The `core/security.py`
+  constants remain documentation-as-defaults, not yet centrally enforced.
 - Human approval is a hard requirement before publication — no code path
-  in the design allows automatic publishing.
+  in the design, or in the dashboard, allows automatic publishing.
 
 ## Team
 

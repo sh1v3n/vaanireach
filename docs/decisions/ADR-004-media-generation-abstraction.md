@@ -1,21 +1,21 @@
 # ADR-004: Media Generation Abstraction
 
-**Status: DEFERRED pending benchmarking.**
+**Status: DECIDED (Phase 3-4).**
 
 ## Context
 
 Visual/media generation for outreach videos can be approached many ways —
 FFmpeg-based motion graphics, image+voice compositing, Remotion, AI video
 APIs (Hedra/Runway/LTX-style), local/open-source models, 3D/avatar
-generation, or hybrids. None has been benchmarked yet for cost, latency,
-quality, or Indian-language support. Committing early would lock the
-whole pipeline to one vendor's constraints before those trade-offs are
+generation, or hybrids. None had been benchmarked yet for cost, latency,
+quality, or Indian-language support. Committing early risked locking the
+whole pipeline to one vendor's constraints before those trade-offs were
 understood.
 
 ## Decision
 
-Defer the choice. Instead, ship three independently swappable interface
-layers now (see `docs/architecture.md#the-visual-strategy-layer`):
+Deferred the choice originally; shipped three independently swappable
+interface layers first (see `docs/architecture.md#the-visual-strategy-layer`):
 
 ```python
 # core/interfaces/scene_director.py
@@ -41,15 +41,32 @@ class VideoGenerationProvider(ABC):
     def cancel(self, job_id: str) -> None: ...
 ```
 
-Any future provider — FFmpeg, Remotion, LTX, Hedra, a local model, or
-something not yet released — must satisfy `VisualProvider`,
-`AudioProvider`, or `VideoGenerationProvider`, and is only ever called
-from inside a `SceneRenderer`. `SceneDirector`, the orchestrator,
-verification, and the dashboard never import a concrete provider.
+Providers were then picked for the hackathon build:
+
+| Interface | Provider | File | Resilience shape |
+|---|---|---|---|
+| `VisualProvider` | Google Imagen 3 (`imagen-3.0-generate-002`) via `google-genai` | [`providers/visual/gemini_imagen_provider.py`](../../providers/visual/gemini_imagen_provider.py) | Tier 0 content-addressed `LocalCache` (never re-generate the same prompt) → Tier 1 `GeminiManager` horizontal key rotation → Tier 2 local Pillow-drawn placeholder card if every key is exhausted |
+| `VideoGenerationProvider` (avatar hook) | Hedra Character-3, then D-ID | [`providers/video/avatar_provider.py`](../../providers/video/avatar_provider.py) | Tier 1 Hedra (horizontal key rotation) → Tier 2 D-ID (horizontal key rotation) → Tier 3 a locally-generated static placeholder clip (`fallback_assets/generic_hook.mp4`) |
+
+`AudioProvider` (background music) remains unimplemented — out of hackathon
+scope.
+
+**Known gap:** no concrete `SceneDirector` or `SceneRenderer` exists yet
+(`SceneRendererRegistry` still resolves zero renderers). The Phase 5
+dashboard (`dashboard/app.py`) calls `GeminiImagenProvider` and
+`AvatarFailoverProvider` directly rather than through a `SceneRenderer`,
+manually constructing the `Scene` objects each call needs. This is a
+documented, deliberate shortcut for the hackathon timeline, not a
+reversal of the layering decision — a real `SceneDirector`/`SceneRenderer`
+can be inserted later without touching either provider.
 
 ## Consequences
 
-- Benchmarking can happen in parallel with the rest of the build; slotting
-  in a winner later touches only `providers/` and `rendering/adapters/`.
-- Multiple `SceneRenderer`s can coexist (e.g. FFmpeg for most scenes, an
-  AI video API for one hero scene) without special-casing anywhere else.
+- Benchmarking happened in parallel with the rest of the build; the
+  providers above only touch `providers/` — nothing in `core/`, `agents/`,
+  or `backend/` imports a concrete provider.
+- Multiple `SceneRenderer`s can still coexist later (e.g. a different
+  provider for one hero scene) without special-casing anywhere else, once
+  that layer is actually built.
+- The dashboard's direct-call shortcut is the one place today that would
+  need to change if/when a real `SceneDirector`/`SceneRenderer` lands.
