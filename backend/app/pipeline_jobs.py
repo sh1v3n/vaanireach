@@ -1,0 +1,61 @@
+"""In-memory job store for the review-dashboard backend. No database —
+job history is lost on backend restart, which is accepted for this
+single-operator demo tool (see the design spec's Decisions section).
+
+Every mutation to a JobRecord happens under that record's own lock
+(`JobRecord.lock`), so a GET request polling mid-write never observes a
+torn/partial update — the background thread doing the actual
+generation work holds the lock only for the instant it swaps in a
+finished result, never for the full multi-minute pipeline call itself.
+"""
+from __future__ import annotations
+
+import threading
+import uuid
+from dataclasses import dataclass, field
+from typing import Literal
+
+from core.models.enums import LanguageCode
+from rendering.multilingual_video import LanguageVideoResult
+
+JobStatus = Literal["pending", "running", "pending_review", "failed"]
+LanguageStatus = Literal["pending_review", "published", "rejected"]
+
+
+@dataclass
+class LanguageJobState:
+    status: LanguageStatus
+    result: LanguageVideoResult
+    regenerating: bool = False
+
+
+@dataclass
+class JobRecord:
+    job_id: str
+    status: JobStatus = "pending"
+    error: str | None = None
+    languages: dict[LanguageCode, LanguageJobState] = field(default_factory=dict)
+    lock: threading.Lock = field(default_factory=threading.Lock)
+
+
+class JobStore:
+    """Process-wide singleton (one instance created in backend/app/main.py
+    and reused by every route handler) — a plain dict is enough since
+    FastAPI's default dev server (uvicorn --reload aside) runs this as
+    one process, one set of background threads, no multi-worker sharing
+    required for a demo tool."""
+
+    def __init__(self) -> None:
+        self._jobs: dict[str, JobRecord] = {}
+        self._store_lock = threading.Lock()
+
+    def create_job(self) -> JobRecord:
+        job_id = str(uuid.uuid4())
+        record = JobRecord(job_id=job_id)
+        with self._store_lock:
+            self._jobs[job_id] = record
+        return record
+
+    def get_job(self, job_id: str) -> JobRecord | None:
+        with self._store_lock:
+            return self._jobs.get(job_id)
