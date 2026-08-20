@@ -671,13 +671,35 @@ to:
             audio_concat_path = concat_audio_files(audio_paths, tmp_path)
 ```
 
-- [ ] **Step 4: Run the existing regression tests**
+- [ ] **Step 4: Update `tests/test_ffmpeg_audio_concat_mismatched_formats.py`'s two direct call sites**
+
+**Pre-flight ruling (recorded before this task was dispatched):** this existing test file calls the
+now-removed `FfmpegVideoRenderer._concat_audio(...)` staticmethod directly, at two call sites — Step
+2 above deletes that method, so leaving these calls as-is would break both tests with
+`AttributeError: type object 'FfmpegVideoRenderer' has no attribute '_concat_audio'`. Fix both before
+running anything.
+
+Change the import (currently `from rendering.adapters.ffmpeg_video_renderer import FfmpegVideoRenderer`)
+to:
+```python
+from rendering.adapters.ffmpeg_video_renderer import concat_audio_files
+```
+
+Change both call sites — `test_concat_of_mismatched_sample_rates_and_channels_is_correct` (currently
+`out_path = FfmpegVideoRenderer._concat_audio([str(clip_a), str(clip_b)], tmp_path)`) and
+`test_concat_of_matching_formats_still_works` (currently
+`out_path = FfmpegVideoRenderer._concat_audio([str(clip_a), str(clip_b), str(clip_c)], tmp_path)`) —
+to call `concat_audio_files(...)` with the same arguments instead of
+`FfmpegVideoRenderer._concat_audio(...)`. Only the callable name changes; arguments and every
+assertion stay exactly as they are.
+
+- [ ] **Step 5: Run the existing regression tests**
 
 Run: `cd vaanireach && PYTHONPATH=. .venv/bin/python3 -m pytest tests/test_ffmpeg_audio_concat_mismatched_formats.py tests/test_step_e_multi_scene_composition.py -v`
-Expected: all PASS, unchanged from before this refactor (confirms `compose_multi_scene`'s behavior
-is identical).
+Expected: all PASS (this confirms both `compose_multi_scene`'s behavior is unchanged AND the two
+updated call sites still exercise the exact same logic, now via the module-level function).
 
-- [ ] **Step 5: Add a direct unit test for the extracted function**
+- [ ] **Step 6: Add a direct unit test for the extracted function**
 
 Add to `tests/test_ffmpeg_audio_concat_mismatched_formats.py` (append):
 
@@ -706,15 +728,16 @@ def test_concat_audio_files_is_importable_at_module_level(tmp_path):
     assert float(probe.stdout.strip()) == pytest.approx(2.5, abs=0.05)
 ```
 
-(Check the file's existing imports already include `pytest`, `Path`/`tmp_path` fixture usage — add
-`import pytest` at the top if it's not already there.)
+The file's existing imports already include `pytest`, `Path`, and `subprocess` at module level — the
+new test's own `import subprocess` line is redundant but harmless; remove it if you prefer, not
+required.
 
-- [ ] **Step 6: Run it**
+- [ ] **Step 7: Run it**
 
 Run: `cd vaanireach && PYTHONPATH=. .venv/bin/python3 -m pytest tests/test_ffmpeg_audio_concat_mismatched_formats.py -v`
 Expected: all PASS, including the new test.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 cd vaanireach
