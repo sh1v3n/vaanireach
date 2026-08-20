@@ -12,7 +12,7 @@ and — critically — Indian-language coverage would have been premature.
 ## Decision
 
 **LLM (fact extraction, script generation, translation, semantic
-verification): Google Gemini** (`gemini-2.5-flash`), via the
+verification): Google Gemini** (`gemini-3.6-flash`), via the
 `google-genai` SDK. One shared resilience primitive,
 [`providers/llm/gemini_client.py`](../../providers/llm/gemini_client.py)'s
 `GeminiManager`, backs everything: horizontal rotation across a pool of

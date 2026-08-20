@@ -108,7 +108,7 @@ decisions).
 | Officer dashboard | Streamlit (`dashboard/app.py`) | The actual working front-end — in-process, no HTTP hop |
 | Frontend (`frontend/`) | Next.js (TypeScript, App Router) | Scaffolded for a future web dashboard; **not the one that runs today** |
 | Persistence | None yet | Everything lives in `st.session_state` for the dashboard session; SQLite/SQLModel remain unimplemented |
-| LLM | Google Gemini (`gemini-2.5-flash` + Imagen 3) | See [Media Generation](#media-generation) |
+| LLM | Google Gemini (`gemini-3.6-flash` + Imagen 3) | See [Media Generation](#media-generation) |
 | TTS | Sarvam AI → `edge-tts` fallback | See [Media Generation](#media-generation) |
 | Avatar / video composition | Hedra → D-ID → local fallback; MoviePy v2 | See [Media Generation](#media-generation) |
 | Local dev | Native Python venv | Runs directly on macOS/Linux/Windows, no Docker required |

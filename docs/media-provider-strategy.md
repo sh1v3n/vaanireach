@@ -12,7 +12,7 @@ decision but a record of what was considered.
 
 | Concern | Provider(s) | Resilience shape |
 |---|---|---|
-| LLM (facts/scripts/translation/semantic verification) | Google Gemini (`gemini-2.5-flash`) | Horizontal key rotation across `GEMINI_API_KEYS` |
+| LLM (facts/scripts/translation/semantic verification) | Google Gemini (`gemini-3.6-flash`) | Horizontal key rotation across `GEMINI_API_KEYS` |
 | TTS | Sarvam AI → `edge-tts` | Horizontal rotation, then a hard local fallback |
 | Talking-avatar hook | Hedra → D-ID → static local clip | Horizontal rotation per vendor, then a 3rd local fallback tier |
 | B-roll images | Google Imagen 3 (`imagen-3.0-generate-002`) | Local cache → horizontal key rotation → local placeholder card |
