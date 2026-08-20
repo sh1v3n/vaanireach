@@ -87,3 +87,101 @@ def test_mismatched_image_count_raises_clearly():
             story_director=director, translator=_StubTranslator(),
             target_language=LanguageCode.HI, project_id="x",
         )
+
+
+class _FakeAvatarProvider:
+    """generate_avatar_hook without ever calling Hedra/D-ID - returns a
+    real short local MP4 (via the same Tier-3 placeholder generator
+    AvatarFailoverProvider itself uses) so downstream ffmpeg compositing
+    gets a genuinely playable file."""
+
+    def __init__(self, *, should_fail: bool = False) -> None:
+        self.should_fail = should_fail
+        self.calls: list[tuple[str, str]] = []  # (image_path, audio_path)
+
+    def generate_avatar_hook(self, image_path, audio_path, *, project_id, scene_id=None, text_prompt=""):
+        from providers.video.avatar_provider import ensure_fallback_asset
+        from core.models.enums import GenerationStatus, MediaAssetType
+        from core.models.media import MediaAsset
+
+        self.calls.append((image_path, audio_path))
+        if self.should_fail:
+            raise RuntimeError("simulated avatar provider failure")
+        path = ensure_fallback_asset()
+        return MediaAsset(
+            project_id=project_id, asset_type=MediaAssetType.VIDEO_CLIP, storage_path=path,
+            provider_name="fake-avatar", generation_status=GenerationStatus.COMPLETE,
+        )
+
+
+class _FakeVisualProvider:
+    def generate_image(self, prompt, scene, *, project_id):
+        from core.models.enums import GenerationStatus, MediaAssetType
+        from core.models.media import MediaAsset
+        return MediaAsset(
+            project_id=project_id, scene_id=scene.id, asset_type=MediaAssetType.IMAGE,
+            storage_path=_dummy_portrait_path(), provider_name="fake-visual",
+            generation_status=GenerationStatus.COMPLETE,
+        )
+
+
+def _dummy_portrait_path() -> str:
+    """A real, tiny JPEG - Hedra/D-ID would need a real image, but the
+    fake avatar provider above never actually reads this file, so any
+    valid image on disk is fine for these tests."""
+    import tempfile
+    from PIL import Image
+    path = Path(tempfile.gettempdir()) / "test_avatar_portrait.jpg"
+    if not path.exists():
+        Image.new("RGB", (200, 280), (128, 128, 128)).save(path, format="JPEG")
+    return str(path)
+
+
+@pytest.mark.skipif(not _HAS_KEYS, reason="GROQ_API_KEY/SARVAM_API_KEYS not set")
+def test_generate_language_video_composites_avatar_and_captions_by_default():
+    """Global constraint: avatar+PiP+caption compositing is REQUIRED, not
+    optional - a normal successful run must produce avatar_composited=True."""
+    facts = sample_notice_facts()
+    director = TemplateStoryDirector()
+    _, scenes = director.plan_narrative_arc(facts)
+    renderer = PilSceneRenderer()
+    image_paths = [renderer.render_scene(s).storage_path for s in scenes]
+
+    fake_avatar = _FakeAvatarProvider()
+    fake_visual = _FakeVisualProvider()
+
+    result = generate_language_video(
+        facts, image_paths,
+        story_director=director, translator=GroqTranslationProvider(),
+        target_language=LanguageCode.EN, project_id="test-avatar-wiring",
+        avatar_provider=fake_avatar, visual_provider=fake_visual,
+    )
+    assert result.avatar_composited is True
+    assert len(fake_avatar.calls) == 1
+    assert result.video_asset.storage_path_mp4 is not None
+    assert Path(result.video_asset.storage_path_mp4).exists()
+
+
+@pytest.mark.skipif(not _HAS_KEYS, reason="GROQ_API_KEY/SARVAM_API_KEYS not set")
+def test_generate_language_video_falls_back_when_compositing_fails():
+    """Reliability fallback (not a design option - see Global Constraints):
+    when the avatar/compositing step raises, the run must still return a
+    valid, playable video (the plain captioned B-roll), not crash."""
+    facts = sample_notice_facts()
+    director = TemplateStoryDirector()
+    _, scenes = director.plan_narrative_arc(facts)
+    renderer = PilSceneRenderer()
+    image_paths = [renderer.render_scene(s).storage_path for s in scenes]
+
+    fake_avatar = _FakeAvatarProvider(should_fail=True)
+    fake_visual = _FakeVisualProvider()
+
+    result = generate_language_video(
+        facts, image_paths,
+        story_director=director, translator=GroqTranslationProvider(),
+        target_language=LanguageCode.EN, project_id="test-avatar-fallback",
+        avatar_provider=fake_avatar, visual_provider=fake_visual,
+    )
+    assert result.avatar_composited is False
+    assert result.video_asset.storage_path_mp4 is not None
+    assert Path(result.video_asset.storage_path_mp4).exists()
