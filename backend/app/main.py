@@ -7,6 +7,7 @@ backend/README.md) — no Docker required.
 """
 from __future__ import annotations
 
+from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -16,6 +17,7 @@ from app.routes import (
     documents,
     facts,
     generate,
+    pipeline,
     process,
     projects,
     scripts,
@@ -24,6 +26,8 @@ from app.routes import (
     verification,
     workflow,
 )
+
+load_dotenv("../.env")  # repo-root .env — backend runs with cwd=backend/, PYTHONPATH=..
 
 settings = get_settings()
 
@@ -53,6 +57,7 @@ for router_module in (
     verification,
     workflow,
     approval,
+    pipeline,
 ):
     app.include_router(router_module.router)
 
