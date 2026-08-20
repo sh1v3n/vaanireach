@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pytest  # noqa: E402
 
-from rendering.adapters.ffmpeg_video_renderer import FfmpegVideoRenderer  # noqa: E402
+from rendering.adapters.ffmpeg_video_renderer import concat_audio_files  # noqa: E402
 
 
 def _make_tone(path: Path, *, duration: float, sample_rate: int, channels: int) -> None:
@@ -50,7 +50,7 @@ def test_concat_of_mismatched_sample_rates_and_channels_is_correct(tmp_path):
     _make_tone(clip_a, duration=2.0, sample_rate=24000, channels=1)
     _make_tone(clip_b, duration=2.0, sample_rate=44100, channels=2)
 
-    out_path = FfmpegVideoRenderer._concat_audio([str(clip_a), str(clip_b)], tmp_path)
+    out_path = concat_audio_files([str(clip_a), str(clip_b)], tmp_path)
 
     actual_duration = _probe_duration(out_path)
     assert actual_duration == pytest.approx(4.0, abs=0.1), (
@@ -66,6 +66,30 @@ def test_concat_of_matching_formats_still_works(tmp_path):
     for clip, dur in [(clip_a, 1.5), (clip_b, 2.5), (clip_c, 1.0)]:
         _make_tone(clip, duration=dur, sample_rate=24000, channels=1)
 
-    out_path = FfmpegVideoRenderer._concat_audio([str(clip_a), str(clip_b), str(clip_c)], tmp_path)
+    out_path = concat_audio_files([str(clip_a), str(clip_b), str(clip_c)], tmp_path)
     actual_duration = _probe_duration(out_path)
     assert actual_duration == pytest.approx(5.0, abs=0.1)
+
+
+def test_concat_audio_files_is_importable_at_module_level(tmp_path):
+    """Regression guard for the Task 4 extraction: concat_audio_files
+    must be usable without a FfmpegVideoRenderer instance, since
+    rendering/multilingual_video.py calls it directly to build the full
+    narration audio track for avatar lip-sync."""
+    from rendering.adapters.ffmpeg_video_renderer import concat_audio_files
+    import subprocess
+
+    # two short real WAV files via ffmpeg's own sine generator - avoids a binary fixture file
+    a = tmp_path / "a.wav"
+    b = tmp_path / "b.wav"
+    subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=1", str(a)], check=True, timeout=15)
+    subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "sine=frequency=220:duration=1.5", str(b)], check=True, timeout=15)
+
+    out_path = concat_audio_files([str(a), str(b)], tmp_path)
+    assert out_path.exists()
+
+    probe = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(out_path)],
+        capture_output=True, text=True, timeout=15,
+    )
+    assert float(probe.stdout.strip()) == pytest.approx(2.5, abs=0.05)

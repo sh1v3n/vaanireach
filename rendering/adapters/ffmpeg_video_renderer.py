@@ -110,6 +110,51 @@ def build_multi_scene_captions(scenes: list[Scene]) -> tuple[str, str]:
     return "\n".join(srt_lines), "\n".join(vtt_lines)
 
 
+def concat_audio_files(audio_paths: list[str], tmp_path: Path) -> Path:
+    """Sequential audio concat — no crossfade, no gaps. Total duration
+    is exactly the sum of the input files' own durations.
+
+    Re-encodes through a filter graph rather than the concat demuxer's
+    `-c copy` stream-copy path — found by direct reproduction that
+    stream-copying inputs with DIFFERENT sample rates/channel counts
+    (e.g. SarvamTTSProvider's 24kHz mono output mixed with its own
+    edge-tts fallback's 44.1kHz stereo output) silently produces a
+    corrupted, wrong-duration result with no error. The
+    `aresample`+`concat` filter graph normalizes every input to a common
+    format before concatenating, so this is correct regardless of which
+    TTS vendor served which scene.
+
+    Module-level (not a FfmpegVideoRenderer method) so callers besides
+    compose_multi_scene can reuse it — e.g. rendering/multilingual_video.py
+    builds the same full-narration audio track this way to feed the
+    avatar lip-sync provider."""
+    out_path = tmp_path / "audio_concat.wav"
+    n = len(audio_paths)
+
+    inputs: list[str] = []
+    for p in audio_paths:
+        inputs += ["-i", p]
+
+    per_input_filters = "".join(
+        f"[{i}:a]aresample=48000,aformat=sample_fmts=s16:channel_layouts=stereo[a{i}];"
+        for i in range(n)
+    )
+    concat_inputs = "".join(f"[a{i}]" for i in range(n))
+    filter_complex = f"{per_input_filters}{concat_inputs}concat=n={n}:v=0:a=1[out]"
+
+    cmd = [
+        "ffmpeg", "-y", "-v", "error",
+        *inputs,
+        "-filter_complex", filter_complex,
+        "-map", "[out]",
+        str(out_path),
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    if result.returncode != 0:
+        raise RuntimeError(f"audio concat failed: {result.stderr}")
+    return out_path
+
+
 class FfmpegVideoRenderer(VideoRenderer):
     def __init__(self, output_dir: Path | str | None = None) -> None:
         self.output_dir = Path(output_dir) if output_dir is not None else VIDEO_OUTPUT_DIR
@@ -227,7 +272,7 @@ class FfmpegVideoRenderer(VideoRenderer):
             video_only_path = self._xfade_chain(clip_paths, scenes, durations, transition_durations, tmp_path)
 
             # 4. audio: simple sequential concat, untouched, total = sum(durations).
-            audio_concat_path = self._concat_audio(audio_paths, tmp_path)
+            audio_concat_path = concat_audio_files(audio_paths, tmp_path)
 
             # 5. mux
             video_asset = VideoAsset(
@@ -328,48 +373,6 @@ class FfmpegVideoRenderer(VideoRenderer):
             capture_output=True, text=True, timeout=15,
         )
         return float(result.stdout.strip())
-
-    @staticmethod
-    def _concat_audio(audio_paths: list[str], tmp_path: Path) -> Path:
-        """Sequential audio concat — no crossfade, no gaps. Total
-        duration is exactly the sum of the input files' own durations.
-
-        Re-encodes through a filter graph rather than the concat
-        demuxer's `-c copy` stream-copy path — found by direct
-        reproduction that stream-copying inputs with DIFFERENT sample
-        rates/channel counts (e.g. SarvamTTSProvider's 24kHz mono output
-        mixed with its own edge-tts fallback's 44.1kHz stereo output)
-        silently produces a corrupted, wrong-duration result with no
-        error. The `aresample`+`concat` filter graph normalizes every
-        input to a common format before concatenating, so this is
-        correct regardless of which TTS vendor served which scene."""
-        out_path = tmp_path / "audio_concat.wav"
-        n = len(audio_paths)
-
-        inputs: list[str] = []
-        for p in audio_paths:
-            inputs += ["-i", p]
-
-        # Each input is resampled/remixed to a common format (48kHz stereo)
-        # before concat — concat requires every input to already match.
-        per_input_filters = "".join(
-            f"[{i}:a]aresample=48000,aformat=sample_fmts=s16:channel_layouts=stereo[a{i}];"
-            for i in range(n)
-        )
-        concat_inputs = "".join(f"[a{i}]" for i in range(n))
-        filter_complex = f"{per_input_filters}{concat_inputs}concat=n={n}:v=0:a=1[out]"
-
-        cmd = [
-            "ffmpeg", "-y", "-v", "error",
-            *inputs,
-            "-filter_complex", filter_complex,
-            "-map", "[out]",
-            str(out_path),
-        ]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-        if result.returncode != 0:
-            raise RuntimeError(f"audio concat failed: {result.stderr}")
-        return out_path
 
     # ---------------------------------------------------------------- VideoRenderer ABC
 
