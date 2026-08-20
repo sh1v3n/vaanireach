@@ -255,13 +255,22 @@ class TemplateStoryDirector(StoryDirector):
         # --- HOOK: merged with what used to be a separate CONTEXT scene.
         # A HOOK scene and a CONTEXT scene both drawing on the same
         # ORGANIZATION/LOCATION facts repeated each other; one scene,
-        # citing both, opens the story instead. Direct address ("Farmers
-        # of X —") reads more dynamically than a flat dateline sentence.
+        # citing both, opens the story instead. Direct address ("An
+        # announcement from/concerning X —") reads more dynamically than
+        # a flat dateline sentence, WITHOUT assuming a specific audience
+        # (e.g. "Farmers of X") that isn't grounded in any extracted
+        # fact — a tax/health/education notice has no farmers in it, and
+        # the fact-invention guard applies to the audience claim just as
+        # much as to any other narration text.
         context_facts = buckets.get(NarrativeRole.CONTEXT, [])
         if context_facts:
             location = next((f for f in context_facts if f.fact_type == FactType.LOCATION), None)
             anchor = location or context_facts[0]
-            add_scene(NarrativeRole.HOOK, context_facts, f"Farmers of {anchor.value} — this concerns you.")
+            if anchor.fact_type == FactType.LOCATION:
+                hook_narration = f"An announcement concerning {anchor.value} — this concerns you."
+            else:
+                hook_narration = f"An announcement from {anchor.value} — this concerns you."
+            add_scene(NarrativeRole.HOOK, context_facts, hook_narration)
 
         # --- fact-derived core, in story order ---
         for role in _CORE_STORY_ORDER:

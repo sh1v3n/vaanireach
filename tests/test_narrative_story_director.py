@@ -185,6 +185,44 @@ def test_opening_scene_covers_context_without_a_separate_context_scene(arc_and_s
     assert FactType.ORGANIZATION in cited_types
 
 
+def test_hook_narration_does_not_invent_an_audience(arc_and_scenes):
+    """Regression guard for a real bug found live (2026-08-21): the HOOK
+    scene used to hardcode 'Farmers of {anchor}' regardless of the
+    document's actual domain — for a tax/finance/health notice with no
+    farmer-related facts at all, this asserted an audience the facts
+    never supported, which is exactly what the fact-invention guard
+    exists to prevent. The HOOK must ground itself in the anchor fact's
+    value without asserting who the audience is."""
+    _, scenes, _ = arc_and_scenes
+    hook = next(s for s in scenes if s.narrative_role == NarrativeRole.HOOK)
+    assert "farmer" not in hook.narration_segment_text.lower()
+
+
+def test_hook_narration_grounds_itself_in_the_anchor_fact_by_type():
+    """LOCATION-anchored HOOK reads 'concerning <location>'; an
+    ORGANIZATION-only anchor (no LOCATION fact at all) reads 'from
+    <org>' — both cite the anchor's real value, neither invents an
+    audience."""
+    director: StoryDirector = TemplateStoryDirector()
+
+    location_and_org_facts = [
+        _fact(FactType.ORGANIZATION, "Ministry of Finance", "Ministry of Finance"),
+        _fact(FactType.LOCATION, "Riverbend District", "Riverbend District"),
+        _fact(FactType.SCHEME, "Income Tax Relief Scheme", "Income Tax Relief Scheme"),
+    ]
+    _, scenes = director.plan_narrative_arc(location_and_org_facts)
+    hook = next(s for s in scenes if s.narrative_role == NarrativeRole.HOOK)
+    assert "concerning Riverbend District" in hook.narration_segment_text
+
+    org_only_facts = [
+        _fact(FactType.ORGANIZATION, "Ministry of Finance", "Ministry of Finance"),
+        _fact(FactType.SCHEME, "Income Tax Relief Scheme", "Income Tax Relief Scheme"),
+    ]
+    _, scenes = director.plan_narrative_arc(org_only_facts)
+    hook = next(s for s in scenes if s.narrative_role == NarrativeRole.HOOK)
+    assert "from Ministry of Finance" in hook.narration_segment_text
+
+
 def test_urgency_omitted_when_it_would_only_repeat_the_deadline(arc_and_scenes):
     """This document has exactly one DEADLINE fact and no independent
     urgency signal (countdown, extension notice, etc.) — URGENCY must be
