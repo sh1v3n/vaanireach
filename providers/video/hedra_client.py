@@ -1,39 +1,57 @@
 """HedraAvatarManager — resilient multi-key wrapper around Hedra's
-Character-3 talking-avatar API.
+Public API v3 (`hedra-avatar` model): audio-to-video talking-avatar
+generation.
 
 Same key-rotation shape as GeminiManager/SarvamTTSManager (itertools.cycle
 + per-key cooldown on rate-limit/auth errors), but unlike a single text or
 TTS call, one "attempt" here is a whole asynchronous pipeline — upload
-image, upload audio, trigger generation, poll until done — so rotation
-happens once per FULL attempt: a failed/timed-out generation on key 1
-means "run the whole pipeline again on key 2", not "back off and retry
-key 1".
+image, upload audio, submit a generation job, poll until done — so
+rotation happens once per FULL attempt: a failed/timed-out generation on
+key 1 means "run the whole pipeline again on key 2", not "back off and
+retry key 1".
 
-API contract, verified against hedra.com/docs/api-reference/public/* and
-the official hedra-labs/hedra-api-starter reference implementation
-(github.com/hedra-labs/hedra-api-starter):
-    Base URL: https://api.hedra.com/web-app/public
-    Auth:     X-API-Key: <key>
+API contract, verified live against the real v3 API during a Task 9
+end-to-end run's failure investigation (2026-08-20): the previously used
+`https://api.hedra.com/web-app/public` base URL is Hedra's OLD (pre-v3)
+internal API — every configured key is a v3 key, which that endpoint
+rejects with a 403 `PERMISSION_DENIED` explaining the account has moved
+to Public API v3 (docs: https://api.hedra.com/v3/docs, spec:
+https://api.hedra.com/v3/openapi.json). This client targets v3:
 
-    1. POST /assets                {name, type:"image"}  -> {id}
-       POST /assets/{id}/upload    multipart file=<image bytes>
-    2. POST /assets                {name, type:"audio"}  -> {id}
-       POST /assets/{id}/upload    multipart file=<audio bytes>
-    3. POST /generations           {type:"video", ai_model_id|model_slug,
-                                     start_keyframe_id, audio_id,
-                                     generated_video_inputs:{text_prompt,
-                                     resolution, aspect_ratio,
-                                     duration_ms?}}       -> {id, status}
-    4. GET  /generations/{id}/status  (poll every ~5s)    -> {status,
-                                     progress, download_url, error_message}
-       status in {queued, processing, finalizing, complete, error}
-    5. GET <download_url> (unauthenticated, presigned)    -> mp4 bytes
+    Base URL: https://api.hedra.com/v3
+    Auth:     X-API-Key: <key>  (confirmed unchanged from the old API —
+              verified live: GET /v3/balance with X-API-Key returns 200)
 
-`ai_model_id` defaults to the Character-3 id used in Hedra's own starter
-repo (`d1dd37a3-e39a-4854-a298-6510289f9cf2`); Hedra's public schema also
-now accepts a `model_slug` string (documented as the non-deprecated
-replacement) — set HEDRA_MODEL_SLUG to use that instead if Hedra rotates
-model ids again before the demo.
+    1. POST /files                 multipart file=<image bytes>
+                                    -> {url, content_type, expires_at}
+       POST /files                 multipart file=<audio bytes>
+                                    -> {url, content_type, expires_at}
+       (same generic upload endpoint for both — v3 has no separate
+       per-media-type "asset" resource; the returned presigned `url` IS
+       the file handle, valid for 1 hour, passed straight into the next
+       call's `input.start_image`/`input.audio`.)
+    2. POST /models/hedra-avatar   {input: {prompt, aspect_ratio,
+                                    resolution, start_image:{source:"url",
+                                    url}, audio:{source:"url", url},
+                                    duration_ms?}}
+                                    -> 202 {job_id, model, status,
+                                    status_url, result_url}
+       (the "hedra-avatar" model is Hedra's "latest longform avatar
+       model, audio to video with full multi-language support... up to
+       10 minutes long" per its own v3 catalog description — audio may
+       be 0.5s-600s, images up to 10.4MB, audio up to 104.8MB, well
+       within any narration length this pipeline produces.)
+    3. GET  /jobs/{job_id}/status  (poll every ~5s) -> {job_id, status,
+                                    progress}
+       status in {IN_QUEUE, IN_PROGRESS, COMPLETED, FAILED}
+    4. GET  /jobs/{job_id}         (once COMPLETED)  -> {..., outputs:
+                                    [{status, asset_id, url,
+                                    content_type, width, height,
+                                    duration_ms}]}
+    5. GET  outputs[0]['url']      (presigned, unauthenticated) -> mp4 bytes
+
+Error envelope also changed for v3: `{"error": {"code", "message",
+"retryable", ...}}` (was `{"code", "error_code", "messages": [...]}`).
 """
 from __future__ import annotations
 
@@ -48,8 +66,8 @@ import requests
 
 logger = logging.getLogger("vaanireach.providers.hedra")
 
-HEDRA_BASE_URL = "https://api.hedra.com/web-app/public"
-DEFAULT_MODEL_ID = "d1dd37a3-e39a-4854-a298-6510289f9cf2"
+HEDRA_BASE_URL = "https://api.hedra.com/v3"
+DEFAULT_MODEL = "hedra-avatar"
 
 POLL_INTERVAL_SECONDS = 5.0
 POLL_TIMEOUT_SECONDS = 120.0
@@ -82,8 +100,8 @@ class HedraGenerationTimeoutError(RuntimeError):
 
 
 class HedraGenerationFailedError(RuntimeError):
-    """A generation job reached status=='error' (or returned no
-    download_url on completion)."""
+    """A generation job reached status=='FAILED' (or completed with no
+    usable output url)."""
 
 
 class _HedraHTTPError(RuntimeError):
@@ -112,7 +130,12 @@ def _mask(key: str) -> str:
 def _raise_for_status(response: requests.Response) -> None:
     try:
         body = response.json()
-        message = (body.get("message") or body.get("error") or response.text[:200]) if isinstance(body, dict) else response.text[:200]
+        if isinstance(body, dict) and isinstance(body.get("error"), dict):
+            message = body["error"].get("message") or str(body["error"])
+        elif isinstance(body, dict):
+            message = body.get("message") or response.text[:200]
+        else:
+            message = response.text[:200]
     except ValueError:
         message = response.text[:200]
     raise _HedraHTTPError(response.status_code, str(message))
@@ -122,7 +145,13 @@ def _classify_error(exc: Exception) -> str:
     """Returns 'client_error', 'rate_limit', 'auth', 'transient',
     'generation_failure', or 'unknown'."""
     if isinstance(exc, _HedraHTTPError):
-        if exc.status_code in (400, 404, 422):
+        if exc.status_code in (400, 402, 404, 422):
+            # 402 (INSUFFICIENT_BALANCE) added after direct reproduction
+            # against the real v3 API (2026-08-20): the API wallet is
+            # shared across every key on an account, so a balance failure
+            # on one key fails identically on all of them — same
+            # "raise immediately, don't burn through the pool" reasoning
+            # as a malformed request.
             return "client_error"
         if exc.status_code == 429:
             return "rate_limit"
@@ -143,8 +172,7 @@ class HedraAvatarManager:
         self,
         api_keys: list[str] | None = None,
         *,
-        model_id: str | None = None,
-        model_slug: str | None = None,
+        model: str | None = None,
         session: requests.Session | None = None,
     ) -> None:
         keys = api_keys if api_keys is not None else _load_keys_from_env()
@@ -157,8 +185,13 @@ class HedraAvatarManager:
         self._cycle = itertools.cycle(self._keys)
         self._cooldown_until: dict[str, float] = {}
         self._session = session or requests.Session()
-        self._model_id = model_id or os.environ.get("HEDRA_MODEL_ID", DEFAULT_MODEL_ID)
-        self._model_slug = model_slug or os.environ.get("HEDRA_MODEL_SLUG") or None
+        # HEDRA_MODEL_ID/HEDRA_MODEL_SLUG (the old v2-era env var names) are
+        # deliberately NOT read here — v3 has one model per URL path
+        # (/models/{model}), not a body field selecting among several ids,
+        # so a stale v2 model id in the environment would be silently
+        # wrong rather than doing anything. HEDRA_MODEL (v3-shaped) is the
+        # only override this client recognizes.
+        self._model = model or os.environ.get("HEDRA_MODEL", DEFAULT_MODEL)
 
     def _next_available_key(self) -> str | None:
         now = time.monotonic()
@@ -169,6 +202,8 @@ class HedraAvatarManager:
         return None
 
     # -- the public entry point ------------------------------------------------
+    # Signature unchanged from the pre-v3 client — avatar_provider.py calls
+    # this exact shape and needs no changes.
 
     def generate_avatar_video(
         self,
@@ -180,8 +215,8 @@ class HedraAvatarManager:
         aspect_ratio: str = "9:16",
         resolution: str = "540p",
     ) -> bytes:
-        """Runs the full Hedra pipeline once per key in the pool (Tier 1,
-        horizontal rotation), stopping at the first success. Raises
+        """Runs the full Hedra v3 pipeline once per key in the pool (Tier
+        1, horizontal rotation), stopping at the first success. Raises
         HedraRequestError immediately on a malformed-request response
         (retrying other keys won't fix a bad payload), or
         HedraAllKeysExhaustedError once every key has failed for any
@@ -233,95 +268,89 @@ class HedraAvatarManager:
         aspect_ratio: str,
         resolution: str,
     ) -> bytes:
-        image_asset_id = self._create_and_upload_asset(key, image_path, asset_type="image")
-        audio_asset_id = self._create_and_upload_asset(key, audio_path, asset_type="audio")
+        image_url = self._upload_file(key, image_path)
+        audio_url = self._upload_file(key, audio_path)
 
-        generated_video_inputs: dict[str, Any] = {
-            "text_prompt": text_prompt or "A person speaking naturally and warmly to the camera",
-            "resolution": resolution,
+        input_body: dict[str, Any] = {
+            "prompt": text_prompt or "A person speaking naturally and warmly to the camera",
             "aspect_ratio": aspect_ratio,
+            "resolution": resolution,
+            "start_image": {"source": "url", "url": image_url},
+            "audio": {"source": "url", "url": audio_url},
         }
         if duration_ms:
-            generated_video_inputs["duration_ms"] = duration_ms
-
-        payload: dict[str, Any] = {
-            "type": "video",
-            "start_keyframe_id": image_asset_id,
-            "audio_id": audio_asset_id,
-            "generated_video_inputs": generated_video_inputs,
-        }
-        if self._model_slug:
-            payload["model_slug"] = self._model_slug
-        else:
-            payload["ai_model_id"] = self._model_id
+            input_body["duration_ms"] = duration_ms
 
         response = self._session.post(
-            f"{HEDRA_BASE_URL}/generations",
+            f"{HEDRA_BASE_URL}/models/{self._model}",
             headers={"X-API-Key": key},
-            json=payload,
+            json={"input": input_body},
             timeout=REQUEST_TIMEOUT_SECONDS,
         )
         if response.status_code >= 400:
             _raise_for_status(response)
-        generation_id = response.json()["id"]
+        job_id = response.json()["job_id"]
 
-        return self._poll_and_download(key, generation_id)
+        return self._poll_and_download(key, job_id)
 
-    def _create_and_upload_asset(self, key: str, file_path: str, *, asset_type: str) -> str:
+    def _upload_file(self, key: str, file_path: str) -> str:
+        """v3 has one generic upload endpoint for every media type — the
+        returned presigned `url` is itself the file handle, passed back
+        verbatim (query string included) as {"source": "url", "url": ...}
+        in the next call's input."""
         headers = {"X-API-Key": key}
         name = Path(file_path).name
 
-        create_resp = self._session.post(
-            f"{HEDRA_BASE_URL}/assets",
-            headers=headers,
-            json={"name": name, "type": asset_type},
-            timeout=REQUEST_TIMEOUT_SECONDS,
-        )
-        if create_resp.status_code >= 400:
-            _raise_for_status(create_resp)
-        asset_id = create_resp.json()["id"]
-
         with open(file_path, "rb") as fh:
-            upload_resp = self._session.post(
-                f"{HEDRA_BASE_URL}/assets/{asset_id}/upload",
+            resp = self._session.post(
+                f"{HEDRA_BASE_URL}/files",
                 headers=headers,
                 files={"file": (name, fh)},
                 timeout=REQUEST_TIMEOUT_SECONDS,
             )
-        if upload_resp.status_code >= 400:
-            _raise_for_status(upload_resp)
-        return asset_id
+        if resp.status_code >= 400:
+            _raise_for_status(resp)
+        url = resp.json().get("url")
+        if not url:
+            raise HedraGenerationFailedError(f"Hedra /files upload for {name!r} did not return a url")
+        return url
 
-    def _poll_and_download(self, key: str, generation_id: str) -> bytes:
+    def _poll_and_download(self, key: str, job_id: str) -> bytes:
         headers = {"X-API-Key": key}
         deadline = time.monotonic() + POLL_TIMEOUT_SECONDS
 
         while time.monotonic() < deadline:
             resp = self._session.get(
-                f"{HEDRA_BASE_URL}/generations/{generation_id}/status",
+                f"{HEDRA_BASE_URL}/jobs/{job_id}/status",
                 headers=headers,
                 timeout=REQUEST_TIMEOUT_SECONDS,
             )
             if resp.status_code >= 400:
                 _raise_for_status(resp)
-            data = resp.json()
-            status = data.get("status")
+            status = resp.json().get("status")
 
-            if status == "complete":
-                download_url = data.get("download_url") or data.get("url")
-                if not download_url:
-                    raise HedraGenerationFailedError(f"Generation {generation_id} completed but returned no download_url")
-                video_resp = requests.get(download_url, timeout=DOWNLOAD_TIMEOUT_SECONDS)
-                video_resp.raise_for_status()
-                return video_resp.content
+            if status == "COMPLETED":
+                return self._download_result(key, job_id)
 
-            if status == "error":
-                raise HedraGenerationFailedError(
-                    f"Generation {generation_id} failed: {data.get('error_message') or data.get('error')}"
-                )
+            if status == "FAILED":
+                raise HedraGenerationFailedError(f"Job {job_id} ended with status=FAILED")
 
             time.sleep(POLL_INTERVAL_SECONDS)
 
         raise HedraGenerationTimeoutError(
-            f"Generation {generation_id} did not reach a terminal status within {POLL_TIMEOUT_SECONDS:.0f}s"
+            f"Job {job_id} did not reach a terminal status within {POLL_TIMEOUT_SECONDS:.0f}s"
         )
+
+    def _download_result(self, key: str, job_id: str) -> bytes:
+        headers = {"X-API-Key": key}
+        resp = self._session.get(f"{HEDRA_BASE_URL}/jobs/{job_id}", headers=headers, timeout=REQUEST_TIMEOUT_SECONDS)
+        if resp.status_code >= 400:
+            _raise_for_status(resp)
+        outputs = resp.json().get("outputs") or []
+        if not outputs or not outputs[0].get("url"):
+            raise HedraGenerationFailedError(f"Job {job_id} is COMPLETED but returned no output url")
+        download_url = outputs[0]["url"]
+
+        video_resp = requests.get(download_url, timeout=DOWNLOAD_TIMEOUT_SECONDS)
+        video_resp.raise_for_status()
+        return video_resp.content

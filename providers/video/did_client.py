@@ -17,6 +17,18 @@ API contract, verified against docs.d-id.com:
     4. GET  /talks/{id}  (poll every ~5s)              -> {status, result_url}
        status in {created, started, done, error, rejected}
     5. GET <result_url> (unauthenticated, presigned s3) -> mp4 bytes
+
+Audio upload compression: `POST /audios` enforces a payload-size cap —
+confirmed by direct reproduction (2026-08-20) against a Task 9
+end-to-end-run failure: a 35s/6.7MB WAV (this pipeline's
+concat_audio_files output, 48kHz/16-bit/stereo PCM, ~192KB/s) got
+`413 Request Too Long`; the identical audio re-encoded to 128kbps MP3
+(~560KB) uploaded successfully (201) with the same duration reported
+back. The original codebase only ever sent D-ID a ~5s hook clip, small
+enough to never hit this cap; feeding it a full narration (this
+pipeline's design) routinely does. Every audio upload is transcoded to
+MP3 first regardless of length, so this doesn't quietly regress again
+for a slightly longer narration later.
 """
 from __future__ import annotations
 
@@ -24,6 +36,8 @@ import base64
 import itertools
 import logging
 import os
+import subprocess
+import tempfile
 import time
 from pathlib import Path
 
@@ -94,6 +108,23 @@ def _mask(key: str) -> str:
 def _auth_header(key: str) -> dict[str, str]:
     token = base64.b64encode(key.encode("utf-8")).decode("ascii")
     return {"Authorization": f"Basic {token}"}
+
+
+AUDIO_TRANSCODE_TIMEOUT_SECONDS = 60
+
+
+def _compress_audio_for_upload(audio_path: str) -> str:
+    """Transcodes to a temp 128kbps MP3 — see the module docstring's
+    "Audio upload compression" note. Caller is responsible for deleting
+    the returned temp file."""
+    fd, out_path = tempfile.mkstemp(suffix=".mp3")
+    os.close(fd)
+    cmd = ["ffmpeg", "-y", "-v", "error", "-i", audio_path, "-c:a", "libmp3lame", "-b:a", "128k", out_path]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=AUDIO_TRANSCODE_TIMEOUT_SECONDS)
+    if result.returncode != 0:
+        os.unlink(out_path)
+        raise RuntimeError(f"_compress_audio_for_upload: ffmpeg transcode failed: {result.stderr}")
+    return out_path
 
 
 def _raise_for_status(response: requests.Response) -> None:
@@ -209,15 +240,28 @@ class DIDAvatarManager:
 
     def _upload(self, key: str, file_path: str, *, endpoint: str, field: str) -> str:
         headers = _auth_header(key)
-        name = Path(file_path).name
 
-        with open(file_path, "rb") as fh:
-            resp = self._session.post(
-                f"{DID_BASE_URL}/{endpoint}",
-                headers=headers,
-                files={field: (name, fh)},
-                timeout=REQUEST_TIMEOUT_SECONDS,
-            )
+        upload_path = file_path
+        compressed_temp_path: str | None = None
+        if field == "audio":
+            # See module docstring's "Audio upload compression" note —
+            # /audios enforces a payload-size cap the raw WAV can exceed.
+            compressed_temp_path = _compress_audio_for_upload(file_path)
+            upload_path = compressed_temp_path
+
+        try:
+            name = Path(upload_path).name
+            with open(upload_path, "rb") as fh:
+                resp = self._session.post(
+                    f"{DID_BASE_URL}/{endpoint}",
+                    headers=headers,
+                    files={field: (name, fh)},
+                    timeout=REQUEST_TIMEOUT_SECONDS,
+                )
+        finally:
+            if compressed_temp_path is not None:
+                os.unlink(compressed_temp_path)
+
         if resp.status_code >= 400:
             _raise_for_status(resp)
         url = resp.json().get("url")
