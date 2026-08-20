@@ -32,7 +32,37 @@ def test_unsupported_extension_raises_clearly():
         extract_text_from_upload_bytes("notice.docx", b"irrelevant")
 
 
-def test_pdf_with_embedded_text_layer_extracts_without_ocr():
+def test_pdf_with_embedded_text_layer_extracts_without_ocr(monkeypatch):
+    """A PDF with a real embedded text layer must return that text via
+    the fast pypdf path and must NEVER reach OCR — this is the common,
+    everyday case (most notices aren't scans) the module optimizes for.
+    Mocks pypdf.PdfReader directly (rather than needing a real PDF-writing
+    library as a dependency) so this test has zero OCR-deps dependency."""
+    class _FakePage:
+        def extract_text(self):
+            return "Applications close 31 March 2026."
+
+    class _FakeReader:
+        def __init__(self, _bytes_io):
+            self.pages = [_FakePage()]
+
+    def _ocr_should_not_be_called(pdf_bytes):
+        raise AssertionError("OCR must not run when pypdf already found embedded text")
+
+    import pypdf
+    monkeypatch.setattr(pypdf, "PdfReader", _FakeReader)
+    monkeypatch.setattr("providers.documents.text_extraction.ocr_pdf_bytes", _ocr_should_not_be_called)
+
+    text = extract_text_from_upload_bytes("notice.pdf", b"irrelevant-bytes-since-PdfReader-is-mocked")
+    assert text == "Applications close 31 March 2026."
+
+
+@pytest.mark.skipif(not _HAS_OCR_DEPS, reason="pytesseract/pdf2image not installed")
+def test_pdf_with_no_text_anywhere_raises_after_ocr_also_fails():
+    """A genuinely blank page: no embedded text layer AND nothing for
+    OCR to transcribe either. This needs the real OCR deps to actually
+    attempt (and correctly fail at) the fallback, so it's skip-guarded
+    like the other real-OCR test in this file."""
     from pypdf import PdfWriter
 
     writer = PdfWriter()
@@ -42,10 +72,6 @@ def test_pdf_with_embedded_text_layer_extracts_without_ocr():
     writer.write(buf)
     pdf_bytes = buf.getvalue()
 
-    # a blank page has no text layer AND (being a real blank raster-free
-    # page) nothing for OCR to find either — this exercises the "both
-    # extraction paths come back empty" error path cheaply, without
-    # needing a real scanned-image fixture.
     with pytest.raises(ValueError, match="no embedded text AND OCR found nothing"):
         extract_text_from_upload_bytes("blank.pdf", pdf_bytes)
 
