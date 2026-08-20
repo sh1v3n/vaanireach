@@ -54,7 +54,15 @@ def extract_text_from_upload(uploaded_file) -> str:
 
         reader = PdfReader(uploaded_file)
         pages_text = [page.extract_text() or "" for page in reader.pages]
-        return "\n".join(pages_text)
+        text = "\n".join(pages_text)
+        if not text.strip():
+            raise ValueError(
+                f"'{uploaded_file.name}' has {len(reader.pages)} page(s) but pypdf found zero extractable "
+                "text. This almost always means it's a SCANNED/image-based PDF (a photo or scan with no "
+                "real text layer) — pypdf only reads embedded text, it does not do OCR. Fix: paste the "
+                "notice text directly below instead, or use a text-native PDF/.txt file."
+            )
+        return text
     raise ValueError(f"Unsupported file type: {uploaded_file.name} — upload a .txt or .pdf")
 
 
