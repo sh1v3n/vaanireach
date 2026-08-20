@@ -42,27 +42,55 @@ LANGUAGE_LABELS: dict[LanguageCode, str] = {
 }
 
 
+def _ocr_pdf_bytes(pdf_bytes: bytes) -> str:
+    """Real OCR fallback for scanned/image-only PDFs: renders each page
+    to an image (pdf2image, needs the system `poppler` — `pdftoppm`) then
+    runs Tesseract (pytesseract, needs the system `tesseract` binary) on
+    each page image. Slower than pypdf's text-layer read (real image
+    processing per page), only reached when that read finds nothing.
+
+    English-only by default (the base `tesseract` install ships English
+    OCR data only) — see requirements.txt for installing Hindi/other
+    Indic-script language data if you need to OCR non-English scans."""
+    import pytesseract
+    from pdf2image import convert_from_bytes
+
+    pages = convert_from_bytes(pdf_bytes)
+    page_texts = [pytesseract.image_to_string(page) for page in pages]
+    return "\n".join(page_texts)
+
+
 def extract_text_from_upload(uploaded_file) -> str:
-    """.txt is read directly; .pdf is text-extracted page by page via
-    pypdf. Anything else is rejected with a clear error rather than
-    silently mis-decoding bytes as text."""
+    """.txt is read directly. .pdf tries pypdf's embedded text layer
+    first (fast, no image processing) — if that finds nothing (a
+    scanned/image-only PDF with no real text layer), falls back to real
+    OCR (_ocr_pdf_bytes). Anything else is rejected with a clear error
+    rather than silently mis-decoding bytes as text."""
     name = uploaded_file.name.lower()
     if name.endswith(".txt"):
         return uploaded_file.read().decode("utf-8", errors="replace")
     if name.endswith(".pdf"):
         from pypdf import PdfReader
+        from io import BytesIO
 
-        reader = PdfReader(uploaded_file)
+        pdf_bytes = uploaded_file.getvalue()
+        reader = PdfReader(BytesIO(pdf_bytes))
         pages_text = [page.extract_text() or "" for page in reader.pages]
         text = "\n".join(pages_text)
-        if not text.strip():
+
+        if text.strip():
+            return text
+
+        st.info(f"'{uploaded_file.name}' has no embedded text layer — running OCR (this takes a few seconds)…")
+        ocr_text = _ocr_pdf_bytes(pdf_bytes)
+        if not ocr_text.strip():
             raise ValueError(
-                f"'{uploaded_file.name}' has {len(reader.pages)} page(s) but pypdf found zero extractable "
-                "text. This almost always means it's a SCANNED/image-based PDF (a photo or scan with no "
-                "real text layer) — pypdf only reads embedded text, it does not do OCR. Fix: paste the "
-                "notice text directly below instead, or use a text-native PDF/.txt file."
+                f"'{uploaded_file.name}' ({len(reader.pages)} page(s)) has no embedded text AND OCR found "
+                "nothing readable either — the scan may be too low-quality, blank, or in a script the "
+                "installed Tesseract language data doesn't cover (English-only by default; see "
+                "requirements.txt for adding Hindi/other Indic scripts). Try pasting the text directly."
             )
-        return text
+        return ocr_text
     raise ValueError(f"Unsupported file type: {uploaded_file.name} — upload a .txt or .pdf")
 
 

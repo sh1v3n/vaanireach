@@ -30,7 +30,17 @@ pillow>=10.0
 
 # --- Dashboard ---
 streamlit>=1.38
-pypdf>=6.0  # local_demo.py's PDF-upload text extraction
+pypdf>=6.0  # local_demo.py's PDF-upload text extraction (embedded text layer)
+pytesseract>=0.3  # local_demo.py's OCR fallback for scanned/image-only PDFs
+pdf2image>=1.17  # renders PDF pages to images for the OCR fallback
+
+# System dependencies (not pip-installable) required by the above:
+#   brew install tesseract poppler   (macOS)
+#   apt-get install tesseract-ocr poppler-utils   (Debian/Ubuntu)
+# Base `tesseract` formula/package ships English OCR data only. For
+# Hindi/other Indic-script scanned documents, also install language data:
+#   brew install tesseract-lang   (macOS, ~100+ languages, large download)
+#   apt-get install tesseract-ocr-hin   (Debian/Ubuntu, Hindi only)
 
 # --- Config ---
 python-dotenv>=1.0
