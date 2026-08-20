@@ -31,6 +31,7 @@ from core.models.document import DocumentPage
 from core.models.enums import LanguageCode, VerificationStatus
 from core.models.fact import SourceFact
 from core.models.media import VideoAsset
+from core.models.verification import VerificationResult
 from core.models.storyboard import Scene
 from providers.llm.groq_provider import GroqLLMProvider
 from providers.narrative.dynamic_narration import generate_dynamic_narration
@@ -58,8 +59,26 @@ class LanguageVideoResult:
     srt_text: str
     vtt_text: str
     scenes: list[Scene]
+    facts: list[SourceFact]
+    """The full Source Fact Ledger this language's narration was
+    verified against — identical across every language in the same
+    run_full_pipeline call (facts are extracted once, shared, per the
+    language-independence principle). Exists so a caller (e.g. a review
+    UI) can show the officer what was actually extracted from the
+    source document without re-running extraction."""
+    image_paths: list[str]
+    """The B-roll image paths this language's video was composed from —
+    identical across every language in the same run for the same
+    reason as `facts`. Exists so a caller can re-invoke
+    generate_language_video later (e.g. after an edited narration line)
+    without re-rendering images or re-extracting facts."""
     verified_count: int
     blocking_count: int
+    verification_results: list[VerificationResult]
+    """Per-claim detail behind verified_count/blocking_count above —
+    one VerificationResult per scene, in the same order as `scenes`.
+    Exists so a caller can show which specific scene(s) failed
+    verification and why, not just the aggregate counts."""
     avatar_composited: bool
     """True when the avatar PiP overlay + caption burn-in succeeded for
     this language. False means the run degraded to the plain
@@ -186,7 +205,8 @@ def generate_language_video(
 
     return LanguageVideoResult(
         language=target_language, video_asset=video_asset, srt_text=srt_text, vtt_text=vtt_text,
-        scenes=scenes, verified_count=verified_count, blocking_count=blocking_count,
+        scenes=scenes, facts=facts, image_paths=image_paths,
+        verified_count=verified_count, blocking_count=blocking_count, verification_results=results,
         avatar_composited=avatar_composited, avatar_tier=avatar_tier,
     )
 

@@ -60,6 +60,10 @@ def test_generates_a_hindi_video_reusing_the_same_images():
     assert any("ऀ" <= ch <= "ॿ" for s in result.scenes for ch in s.narration_segment_text)
     assert result.srt_text.strip() != ""
     assert result.vtt_text.startswith("WEBVTT")
+    assert result.facts == facts
+    assert result.image_paths == image_paths
+    assert len(result.verification_results) == len(result.scenes)
+    assert all(r.is_blocking is False for r in result.verification_results)
 
 
 @pytest.mark.skipif(not _HAS_KEYS, reason="GROQ_API_KEY/SARVAM_API_KEYS not set")
