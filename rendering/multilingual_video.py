@@ -41,8 +41,18 @@ from rendering.adapters.ffmpeg_video_renderer import FfmpegVideoRenderer, build_
 
 logger = logging.getLogger("vaanireach.rendering.multilingual_video")
 
-BROLL_WIDTH = 720
-BROLL_HEIGHT = 1280
+BROLL_WIDTH = 1280
+BROLL_HEIGHT = 720
+"""Landscape (was 720x1280 portrait). AVATAR_ASPECT_RATIO below and
+ffmpeg_video_renderer.py's PIP_WIDTH are both sized to match this same
+16:9 frame — change all three together if this changes again."""
+
+AVATAR_ASPECT_RATIO = "4:3"
+"""Matches providers/video/avatar_portrait.py's AVATAR_IMAGE_WIDTH/HEIGHT
+(1024x768) and ffmpeg_video_renderer.py's PIP_WIDTH (448) — a 4:3 avatar
+box fits comfortably above the caption bar in the landscape frame above;
+the previous default ("9:16" portrait) would make a same-width PiP box
+taller than the entire frame."""
 
 
 @dataclass
@@ -121,6 +131,7 @@ def generate_language_video(
     renderer = FfmpegVideoRenderer()
     broll_video_asset = renderer.compose_multi_scene(
         scenes=scenes, image_paths=image_paths, audio_paths=audio_paths, project_id=project_id,
+        width=BROLL_WIDTH, height=BROLL_HEIGHT,
     )
     srt_text, vtt_text = build_multi_scene_captions(scenes)
 
@@ -137,7 +148,7 @@ def generate_language_video(
             full_narration_text = " ".join(s.narration_segment_text for s in scenes)[:300]
             avatar_asset = avatar.generate_avatar_hook(
                 avatar_portrait_path, str(full_audio_path), project_id=project_id,
-                text_prompt=full_narration_text,
+                text_prompt=full_narration_text, aspect_ratio=AVATAR_ASPECT_RATIO,
             )
             avatar_tier = avatar_asset.metadata.get("tier")
             caption_track_path = build_caption_track(

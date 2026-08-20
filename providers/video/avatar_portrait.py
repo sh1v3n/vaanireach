@@ -21,10 +21,20 @@ from providers.visual.cloudflare_provider import CloudflareVisualProvider
 
 SHARED_ASSET_PROJECT_ID = "vaanireach-shared-assets"
 AVATAR_IMAGE_PROMPT = (
-    "A friendly, professional Indian government outreach spokesperson: warm, approachable "
-    "expression, looking directly at the camera, plain neutral studio background, upper-body "
-    "portrait, soft even lighting, photorealistic, no text or logos in frame"
+    "A friendly, professional Indian government outreach spokesperson seated at a modern news "
+    "broadcast desk, inside a circular news studio with blue ambient lighting, curved illuminated "
+    "wall panels, and large screens in the background showing abstract news graphics and a globe — "
+    "warm, approachable expression, looking directly at the camera, upper-body portrait, "
+    "photorealistic, no text or logos legible in frame"
 )
+
+# 4:3 (landscape-leaning) so the avatar clip Hedra/D-ID generate from this
+# portrait fits a landscape video's PiP box without the box towering over
+# the frame — see rendering/adapters/ffmpeg_video_renderer.py's PIP_WIDTH
+# and providers/video/avatar_provider.py's aspect_ratio passthrough, both
+# sized to match this same 4:3 shape.
+AVATAR_IMAGE_WIDTH = 1024
+AVATAR_IMAGE_HEIGHT = 768
 
 
 def get_avatar_source_image(visual_provider: CloudflareVisualProvider) -> str:
@@ -37,6 +47,9 @@ def get_avatar_source_image(visual_provider: CloudflareVisualProvider) -> str:
         narrative_role=NarrativeRole.HOOK,
         narration_segment_text="avatar source portrait", duration_seconds=1.0,
     )
-    asset = visual_provider.generate_image(AVATAR_IMAGE_PROMPT, placeholder_scene, project_id=SHARED_ASSET_PROJECT_ID)
+    asset = visual_provider.generate_image(
+        AVATAR_IMAGE_PROMPT, placeholder_scene, project_id=SHARED_ASSET_PROJECT_ID,
+        width=AVATAR_IMAGE_WIDTH, height=AVATAR_IMAGE_HEIGHT,
+    )
     assert asset.storage_path is not None  # generate_image always sets this on success, including its own placeholder-card fallback
     return asset.storage_path

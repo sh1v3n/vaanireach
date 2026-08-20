@@ -116,6 +116,7 @@ class AvatarFailoverProvider(VideoGenerationProvider):
         project_id: str,
         scene_id: str | None = None,
         text_prompt: str = "",
+        aspect_ratio: str = "9:16",
     ) -> MediaAsset:
         """Runs the full 3-tier cascade and returns a MediaAsset pointing
         at a local MP4 — Hedra- or D-ID-generated on success, or the
@@ -135,7 +136,16 @@ class AvatarFailoverProvider(VideoGenerationProvider):
         — e.g. 2 keys per vendor x 300s x 2 vendor tiers = 1200s (20
         minutes) per language. This is a known, accepted tradeoff for
         this fix wave (not something to redesign here) — a future reader
-        adding an aggregate deadline should account for this shape."""
+        adding an aggregate deadline should account for this shape.
+
+        `aspect_ratio` (default "9:16", unchanged from before — so the
+        separate dashboard pipeline, which never passes this, keeps its
+        existing portrait-hook behavior) is forwarded to Hedra only.
+        D-ID's client has no aspect_ratio parameter — its output shape
+        follows the source `image_path`'s own dimensions, so getting a
+        non-default shape out of D-ID means generating that shape of
+        source portrait in the first place (see
+        providers/video/avatar_portrait.py's AVATAR_IMAGE_WIDTH/HEIGHT)."""
         VIDEO_DIR.mkdir(parents=True, exist_ok=True)
 
         video_bytes: bytes | None = None
@@ -144,7 +154,9 @@ class AvatarFailoverProvider(VideoGenerationProvider):
 
         if self.hedra is not None:
             try:
-                video_bytes = self.hedra.generate_avatar_video(image_path, audio_path, text_prompt=text_prompt)
+                video_bytes = self.hedra.generate_avatar_video(
+                    image_path, audio_path, text_prompt=text_prompt, aspect_ratio=aspect_ratio,
+                )
                 provider_name, tier = "hedra", 1
             except (HedraAllKeysExhaustedError, HedraRequestError) as exc:
                 logger.warning("generate_avatar_hook: Hedra tier failed (%s) — falling over to D-ID", exc)

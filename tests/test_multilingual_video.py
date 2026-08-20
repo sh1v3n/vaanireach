@@ -30,6 +30,13 @@ _HAS_KEYS = bool(os.environ.get("GROQ_API_KEY")) and bool(os.environ.get("SARVAM
 
 @pytest.mark.skipif(not _HAS_KEYS, reason="GROQ_API_KEY/SARVAM_API_KEYS not set")
 def test_generates_a_hindi_video_reusing_the_same_images():
+    """This test's own scope is translation/TTS (real GroqTranslationProvider
+    + real SarvamTTSProvider) — it deliberately fakes the avatar/visual
+    providers (dedicated avatar tests exist separately below) so a plain
+    `pytest` run of this file never silently makes a real, paid Hedra/D-ID
+    call. Confirmed the hard way: before this fix, running this file
+    against a funded D-ID account consumed 2 real trial credits per run
+    with no test asserting anything about the avatar at all."""
     facts = sample_notice_facts()
     director = TemplateStoryDirector()
     _, scenes = director.plan_narrative_arc(facts)
@@ -41,6 +48,7 @@ def test_generates_a_hindi_video_reusing_the_same_images():
         facts, image_paths,
         story_director=director, translator=GroqTranslationProvider(),
         target_language=LanguageCode.HI, project_id="multilingual-test",
+        avatar_provider=_FakeAvatarProvider(), visual_provider=_FakeVisualProvider(),
     )
 
     assert result.language == LanguageCode.HI
@@ -56,6 +64,9 @@ def test_generates_a_hindi_video_reusing_the_same_images():
 
 @pytest.mark.skipif(not _HAS_KEYS, reason="GROQ_API_KEY/SARVAM_API_KEYS not set")
 def test_english_target_skips_translation_but_still_regenerates_video():
+    """See test_generates_a_hindi_video_reusing_the_same_images's docstring
+    — same reasoning: this test's scope is TTS/verification, so the avatar
+    step is faked to avoid a real, paid vendor call on every test run."""
     facts = sample_notice_facts()
     director = TemplateStoryDirector()
     _, scenes = director.plan_narrative_arc(facts)
@@ -66,6 +77,7 @@ def test_english_target_skips_translation_but_still_regenerates_video():
         facts, image_paths,
         story_director=director, translator=GroqTranslationProvider(),
         target_language=LanguageCode.EN, project_id="multilingual-test-en",
+        avatar_provider=_FakeAvatarProvider(), visual_provider=_FakeVisualProvider(),
     )
     assert result.language == LanguageCode.EN
     assert result.blocking_count == 0
@@ -100,7 +112,7 @@ class _FakeAvatarProvider:
         self.tier = tier  # 1=Hedra, 2=D-ID, 3=Tier-3 static placeholder — mirrors AvatarFailoverProvider
         self.calls: list[tuple[str, str]] = []  # (image_path, audio_path)
 
-    def generate_avatar_hook(self, image_path, audio_path, *, project_id, scene_id=None, text_prompt=""):
+    def generate_avatar_hook(self, image_path, audio_path, *, project_id, scene_id=None, text_prompt="", aspect_ratio="9:16"):
         from providers.video.avatar_provider import ensure_fallback_asset
         from core.models.enums import GenerationStatus, MediaAssetType
         from core.models.media import MediaAsset
@@ -117,7 +129,7 @@ class _FakeAvatarProvider:
 
 
 class _FakeVisualProvider:
-    def generate_image(self, prompt, scene, *, project_id):
+    def generate_image(self, prompt, scene, *, project_id, width=None, height=None):
         from core.models.enums import GenerationStatus, MediaAssetType
         from core.models.media import MediaAsset
         return MediaAsset(

@@ -40,7 +40,14 @@ logger = logging.getLogger("vaanireach.rendering.ffmpeg_video_renderer")
 VIDEO_OUTPUT_DIR = Path(os.environ.get("RENDERED_VIDEO_OUTPUT_DIR", "./data/video/final"))
 
 FRAME_RATE = 25
-PIP_WIDTH = 200
+PIP_WIDTH = 448
+"""~35% of the landscape frame's 1280px width (rendering/multilingual_video.py's
+BROLL_WIDTH) — was 200 (~28% of the old 720px-wide portrait frame). Paired
+with the avatar's own 4:3 aspect ratio (see AVATAR_ASPECT_RATIO in
+multilingual_video.py and AVATAR_IMAGE_WIDTH/HEIGHT in avatar_portrait.py),
+this scales to a 448x336 box — comfortably above the caption bar, not
+overflowing the 720px frame height the way a 9:16-shaped box at this
+width would (448 * 16/9 ≈ 796px, taller than the whole frame)."""
 PIP_MARGIN = 16
 
 # Maps our TransitionType straight onto ffmpeg's built-in xfade

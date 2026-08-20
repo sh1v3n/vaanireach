@@ -81,12 +81,25 @@ class CloudflareVisualProvider(VisualProvider):
 
     # ---------------------------------------------------------------- VisualProvider
 
-    def generate_image(self, prompt: str, scene: Scene, *, project_id: str) -> MediaAsset:
+    def generate_image(
+        self, prompt: str, scene: Scene, *, project_id: str, width: int | None = None, height: int | None = None,
+    ) -> MediaAsset:
         """See module docstring re: the added `project_id` keyword-only
         argument. Checks the LocalCache first; on a miss, calls Cloudflare
         Workers AI; if that fails, falls back to a local placeholder card
         rather than raising, so a storyboard's B-roll never fails to
-        produce images just because the API call failed."""
+        produce images just because the API call failed.
+
+        `width`/`height` (optional, default None = whatever the model's
+        own default is — 1024x1024 for FLUX.1-schnell, unspecified) let a
+        caller request a specific output aspect ratio, e.g.
+        providers/video/avatar_portrait.py requesting a 4:3 portrait so
+        the avatar clip it drives fits a landscape PiP box without
+        overflowing. The LocalCache key is still keyed on prompt text
+        alone (unchanged) — every current caller uses one fixed
+        width/height per distinct prompt, so this doesn't collide; a
+        caller requesting the same prompt at two different sizes would
+        need the cache key extended too, which isn't needed today."""
         prompt = (prompt or "").strip()
         if not prompt:
             raise ValueError("generate_image: prompt is empty")
@@ -109,7 +122,7 @@ class CloudflareVisualProvider(VisualProvider):
             return asset
 
         try:
-            image_bytes = self._call_workers_ai(prompt)
+            image_bytes = self._call_workers_ai(prompt, width=width, height=height)
             stored_path = self.cache.put(prompt, image_bytes)
             asset.storage_path = stored_path
             asset.provider_name = f"cloudflare:{self.model}"
@@ -146,15 +159,21 @@ class CloudflareVisualProvider(VisualProvider):
 
     # ---------------------------------------------------------------- Workers AI call
 
-    def _call_workers_ai(self, prompt: str) -> bytes:
+    def _call_workers_ai(self, prompt: str, *, width: int | None = None, height: int | None = None) -> bytes:
         if not self.account_id or not self.api_token:
             raise CloudflareRequestError("CLOUDFLARE_ACCOUNT_ID/CLOUDFLARE_API_TOKEN not configured")
 
         url = f"https://api.cloudflare.com/client/v4/accounts/{self.account_id}/ai/run/{self.model}"
         headers = {"Authorization": f"Bearer {self.api_token}"}
 
+        payload: dict[str, object] = {"prompt": prompt}
+        if width is not None:
+            payload["width"] = width
+        if height is not None:
+            payload["height"] = height
+
         try:
-            response = self._session.post(url, headers=headers, json={"prompt": prompt}, timeout=REQUEST_TIMEOUT_SECONDS)
+            response = self._session.post(url, headers=headers, json=payload, timeout=REQUEST_TIMEOUT_SECONDS)
         except requests.exceptions.RequestException as exc:
             raise CloudflareRequestError(f"network error calling Cloudflare Workers AI: {exc}") from exc
 

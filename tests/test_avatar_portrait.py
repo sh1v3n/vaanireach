@@ -10,19 +10,22 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.models.enums import GenerationStatus, MediaAssetType  # noqa: E402
 from core.models.media import MediaAsset  # noqa: E402
-from providers.video.avatar_portrait import AVATAR_IMAGE_PROMPT, SHARED_ASSET_PROJECT_ID, get_avatar_source_image  # noqa: E402
+from providers.video.avatar_portrait import (  # noqa: E402
+    AVATAR_IMAGE_HEIGHT, AVATAR_IMAGE_PROMPT, AVATAR_IMAGE_WIDTH, SHARED_ASSET_PROJECT_ID, get_avatar_source_image,
+)
 
 
 class _FakeVisualProvider:
     """Records every generate_image call instead of hitting the network -
     fast, deterministic test of avatar_portrait's own logic (prompt/
-    project_id/scene shape passed through), not CloudflareVisualProvider's."""
+    project_id/scene/width/height shape passed through), not
+    CloudflareVisualProvider's."""
 
     def __init__(self) -> None:
-        self.calls: list[tuple[str, str]] = []  # (prompt, project_id)
+        self.calls: list[tuple[str, str, int | None, int | None]] = []  # (prompt, project_id, width, height)
 
-    def generate_image(self, prompt, scene, *, project_id):
-        self.calls.append((prompt, project_id))
+    def generate_image(self, prompt, scene, *, project_id, width=None, height=None):
+        self.calls.append((prompt, project_id, width, height))
         return MediaAsset(
             project_id=project_id, scene_id=scene.id, asset_type=MediaAssetType.IMAGE,
             storage_path="/tmp/fake-avatar-portrait.jpg", provider_name="fake",
@@ -35,9 +38,20 @@ def test_get_avatar_source_image_uses_the_fixed_prompt_and_shared_project_id():
     path = get_avatar_source_image(fake)
     assert path == "/tmp/fake-avatar-portrait.jpg"
     assert len(fake.calls) == 1
-    prompt, project_id = fake.calls[0]
+    prompt, project_id, width, height = fake.calls[0]
     assert prompt == AVATAR_IMAGE_PROMPT
     assert project_id == SHARED_ASSET_PROJECT_ID
+    assert width == AVATAR_IMAGE_WIDTH
+    assert height == AVATAR_IMAGE_HEIGHT
+
+
+def test_get_avatar_source_image_requests_a_4_3_landscape_leaning_size():
+    """Regression guard: the portrait must be wider than it is tall (4:3),
+    not the old default/portrait shape - a portrait-shaped source image
+    would make the landscape PiP box overflow the frame (see
+    rendering/adapters/ffmpeg_video_renderer.py's PIP_WIDTH)."""
+    assert AVATAR_IMAGE_WIDTH > AVATAR_IMAGE_HEIGHT
+    assert AVATAR_IMAGE_WIDTH / AVATAR_IMAGE_HEIGHT == 1024 / 768  # exactly 4:3
 
 
 def test_calling_twice_still_passes_the_same_prompt_both_times():
