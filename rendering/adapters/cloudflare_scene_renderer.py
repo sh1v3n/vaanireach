@@ -88,8 +88,9 @@ brand, or legible text/signage. Keep every prompt terse: subject + setting, noth
 Scenes (role: narration):
 {scenes_block}
 
-Return ONLY a JSON array of exactly {count} short strings (max 15 words each), one per scene in \
-the same order. No markdown fences, no commentary.
+Return ONLY a JSON object of the exact shape {{"prompts": [...]}}, where the array has exactly \
+{count} short strings (max 15 words each), one per scene in the same order. No markdown fences, \
+no commentary, no other keys.
 """
 
 
@@ -121,6 +122,15 @@ def generate_fact_aware_image_prompts(
     except (GroqAllKeysExhaustedError, ValueError) as exc:
         logger.warning("generate_fact_aware_image_prompts: falling back to static per-role prompts (%s)", exc)
         return None
+
+    # Groq's JSON mode validates against an object at the root — a bare
+    # top-level array gets rejected with json_validate_failed even when
+    # well-formed (confirmed live, 2026-08-21: a complete, correctly-
+    # shaped array still failed until wrapped in {"prompts": [...]},
+    # matching the same defensive unwrap groq_provider.py's extract_facts
+    # already needs for the identical reason).
+    if isinstance(raw, dict):
+        raw = raw.get("prompts", [])
 
     if not isinstance(raw, list) or len(raw) != len(scenes):
         logger.warning(

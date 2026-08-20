@@ -122,6 +122,21 @@ class _FakeVisualProvider:
         )
 
 
+def test_generate_fact_aware_image_prompts_unwraps_an_object_wrapped_response():
+    """Regression guard for a real bug found live (2026-08-21): Groq's
+    JSON mode validates against an object at the root — a bare top-level
+    array gets rejected with json_validate_failed even when well-formed.
+    The prompt now asks for {"prompts": [...]}; this must be unwrapped
+    the same way groq_provider.py's extract_facts already unwraps
+    {"facts": [...]}."""
+    scenes = [_scene(NarrativeRole.BENEFIT, narration="Eligible taxpayers receive a rebate of ₹10,000.")]
+    fake = _FakeGroqManager(response={"prompts": ["A person reviewing a tax form at a bank counter"]})
+    result = generate_fact_aware_image_prompts(scenes, groq_manager=fake)
+    assert result is not None
+    assert len(result) == 1
+    assert "tax form" in result[0]
+
+
 def test_generate_fact_aware_image_prompts_returns_one_prompt_per_scene():
     scenes = [
         _scene(NarrativeRole.ANNOUNCEMENT, narration="Announcing the Income Tax Relief Scheme."),
