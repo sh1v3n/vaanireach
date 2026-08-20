@@ -75,12 +75,20 @@ def main(language_codes: list[str]) -> None:
         print(f"  duration: {probe['format']['duration']}s")
         print(f"  decode check: exit={decode.returncode} stderr={decode.stderr.strip() or '(none)'}")
         print(f"  verification: {result.verified_count}/{len(result.scenes)} verified, {result.blocking_count} blocking")
+        status_marker = "✅" if result.avatar_composited else "⚠️  DEGRADED (no avatar/captions)"
+        print(f"  avatar+captions: {status_marker}")
         print(f"  first scene narration: {result.scenes[0].narration_segment_text}")
         print()
 
     print("=== SUMMARY ===")
     for r in results:
-        print(f"  {r.language.value}: {r.video_asset.storage_path_mp4}  ({r.verified_count}/{len(r.scenes)} verified)")
+        status = "avatar+captions OK" if r.avatar_composited else "DEGRADED - plain B-roll only, no avatar/captions"
+        print(f"  {r.language.value}: {r.video_asset.storage_path_mp4}  ({r.verified_count}/{len(r.scenes)} verified)  [{status}]")
+
+    degraded = [r.language.value for r in results if not r.avatar_composited]
+    if degraded:
+        print(f"\n⚠️  {len(degraded)} language(s) fell back to plain B-roll (no avatar/captions): {degraded}")
+        print("    This is a reliability fallback triggering, not expected steady-state — investigate.")
 
 
 if __name__ == "__main__":
