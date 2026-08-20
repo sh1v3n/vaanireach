@@ -1,0 +1,7 @@
+Noto Sans and Noto Sans Devanagari are licensed under the SIL Open Font
+License, Version 1.1 (https://openfontlicense.org/).
+
+Source: https://github.com/google/fonts (ofl/notosans, ofl/notosansdevanagari)
+Bundled here so caption burn-in (rendering/adapters/caption_burner.py) does
+not depend on system font availability — see
+docs/superpowers/specs/2026-08-20-video-captions-avatar-shortening-design.md.

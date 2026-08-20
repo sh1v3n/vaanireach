@@ -22,11 +22,23 @@ rapidfuzz>=3.9
 
 # --- Video compositing ---
 # moviepy>=2.0 for the with_x()/resized()/subclipped() v2 API used by
-# providers/video/avatar_provider.py, providers/tts/sarvam_tts_provider.py,
-# and rendering/adapters/moviepy_video_renderer.py.
+# providers/video/avatar_provider.py and providers/tts/sarvam_tts_provider.py
+# (the Tier-3 avatar fallback and TTS audio slicing — NOT the final video
+# renderer, which shells out to a real ffmpeg install directly, see below).
 ffmpeg-python>=0.2.0
 moviepy>=2.0
 pillow>=10.0
+
+# --- System dependency: ffmpeg + ffprobe on PATH ---
+# rendering/adapters/ffmpeg_video_renderer.py (the final video renderer —
+# see ADR-005) shells out to `ffmpeg`/`ffprobe` directly via subprocess;
+# unlike moviepy's own bundled imageio-ffmpeg binary (used only for the
+# smaller tasks above), there is no bundled fallback here. Install a real
+# ffmpeg build and put it on PATH before running the dashboard or the test
+# suite — e.g. `choco install ffmpeg` (Windows, needs an elevated shell) or
+# download a static build (e.g. gyan.dev's ffmpeg-release-essentials.zip)
+# and put ffmpeg.exe/ffprobe.exe on PATH manually if you don't have admin
+# rights.
 
 # --- Dashboard ---
 streamlit>=1.38

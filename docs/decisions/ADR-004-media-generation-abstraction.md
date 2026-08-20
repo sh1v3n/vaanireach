@@ -49,7 +49,7 @@ Providers were then picked for the hackathon build:
 | Interface | Provider | File | Resilience shape |
 |---|---|---|---|
 | `VisualProvider` | Cloudflare Workers AI (`@cf/black-forest-labs/flux-1-schnell`) | [`providers/visual/cloudflare_flux_provider.py`](../../providers/visual/cloudflare_flux_provider.py) | Tier 0 content-addressed `LocalCache` (never re-generate the same prompt) → Tier 1 `CloudflareFluxManager` horizontal token rotation → Tier 2 local Pillow-drawn placeholder card if every token is exhausted |
-| `VideoGenerationProvider` (avatar hook) | Hedra Character-3, then D-ID | [`providers/video/avatar_provider.py`](../../providers/video/avatar_provider.py) | Tier 1 Hedra (horizontal key rotation) → Tier 2 D-ID (horizontal key rotation) → Tier 3 a locally-generated static placeholder clip (`fallback_assets/generic_hook.mp4`) |
+| `VideoGenerationProvider` (avatar hook) | Hedra Character-3, then D-ID | [`providers/video/avatar_provider.py`](../../providers/video/avatar_provider.py) | Tier 1 Hedra (horizontal key rotation) → Tier 2 D-ID (horizontal key rotation) → Tier 3 the presenter's own photo held static for the real narration audio's own duration, with that audio baked in (`build_static_fallback_clip`) → last-resort Tier 3b, only if even the photo/audio inputs are broken: a shared, content-independent, silent generic placeholder clip (`fallback_assets/generic_hook.mp4`) |
 
 `AudioProvider` (background music) remains unimplemented — out of hackathon
 scope.
@@ -109,6 +109,20 @@ manually constructing the `Scene` objects each call needs. This is a
 documented, deliberate shortcut for the hackathon timeline, not a
 reversal of the layering decision — a real `SceneDirector`/`SceneRenderer`
 can be inserted later without touching either provider.
+
+**Revision (2026-08-20): avatar Tier 3 upgraded from a silent generic
+placeholder to an audio-matched one.** `ensure_fallback_asset()`'s
+original Tier 3 was a single shared, content-independent, SILENT
+solid-color clip fixed at 5s regardless of the actual narration length —
+confirmed live that whenever Hedra and D-ID both failed (Hedra
+permanently rejecting its configured keys; D-ID timing out after ~4
+minutes of retries across its own key pool), the hook's real spoken
+narration was audible nowhere in the final video. `build_static_fallback_clip`
+(`providers/video/avatar_provider.py`) is now what `generate_avatar_hook`
+reaches for first when both real tiers fail: the presenter's own photo
+held static for the real narration audio's own duration, with that audio
+baked in. The old silent placeholder is kept as a last-resort safety net
+one level further down, for if even the photo/audio inputs are broken.
 
 ## Consequences
 

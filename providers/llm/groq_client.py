@@ -39,9 +39,22 @@ Confirmed live: this took a real fact-extraction call from failing twice
 in <1s to succeeding after one ~17.5s wait. (Also confirmed live: setting
 a large `max_tokens` to avoid output truncation does NOT help — it counts
 against the same TPM budget and gets rejected outright with 413 "Request
-too large" before the call even starts.) Never raises the underlying HTTP
-exception to callers — only ever GroqAllKeysExhaustedError,
-once every key in the pool has failed a full rotation.
+too large" before the call even starts.)
+
+A second TPM-exhaustion signature, also confirmed live and repeatedly on
+2026-08-20 under sustained single-key load: instead of a clean 429, a
+call landing with ~0 tokens left in the current window sometimes gets a
+400 `"code":"json_validate_failed"` with an EMPTY `failed_generation`
+field (the model produced nothing to validate) — `_classify_error`
+treats this specific shape as rate-limit-equivalent too (wait + retry the
+same key), not a hard failure. A genuinely bad prompt/schema mismatch
+instead produces some (invalid) text in failed_generation, so that case
+is left as "unknown" — no point retrying a call Groq actually attempted
+and rejected on its merits.
+
+Never raises the underlying HTTP exception to callers — only ever
+GroqAllKeysExhaustedError, once every key in the pool has failed a full
+rotation.
 """
 from __future__ import annotations
 
@@ -79,6 +92,20 @@ _RATE_LIMIT_MARKERS = ("429", "rate_limit", "rate limit", "too many requests")
 _AUTH_QUOTA_MARKERS = ("401", "403", "invalid_api_key", "invalid api key", "insufficient_quota", "permission")
 _TRANSIENT_MARKERS = ("500", "502", "503", "504", "internal", "unavailable", "timeout")
 
+# A second, TPM-exhaustion-specific rate-limit signature: confirmed live,
+# repeatedly, on 2026-08-20 — when a request lands with ~0 tokens left in
+# the current per-minute window, Groq's JSON mode sometimes returns a 400
+# "json_validate_failed"/"failed to generate json" with an EMPTY
+# `failed_generation` field (the model produced literally nothing to
+# validate) instead of a proper 429. A genuinely malformed prompt/schema
+# mismatch instead produces SOME (invalid) text in failed_generation, not
+# nothing — so only the empty-output case is treated as rate-limit-
+# equivalent (wait + retry the same key); a populated failed_generation
+# still falls through to "unknown" (no point retrying a prompt Groq
+# actually attempted and rejected).
+_JSON_VALIDATE_MARKERS = ("json_validate_failed", "failed to validate json", "failed to generate json")
+_EMPTY_FAILED_GENERATION_MARKER = '"failed_generation":""'
+
 
 class GroqAllKeysExhaustedError(RuntimeError):
     """Raised when every key in the pool failed (rate-limit / quota / auth
@@ -110,6 +137,12 @@ def _classify_error(status_code: int | None, text: str) -> str:
     """Returns 'rate_limit', 'auth_quota', 'transient', or 'unknown'."""
     combined = f"{status_code} {text}".lower()
     if status_code == 429 or any(marker in combined for marker in _RATE_LIMIT_MARKERS):
+        return "rate_limit"
+    if (
+        status_code == 400
+        and any(marker in combined for marker in _JSON_VALIDATE_MARKERS)
+        and _EMPTY_FAILED_GENERATION_MARKER in combined
+    ):
         return "rate_limit"
     if status_code in (401, 403) or any(marker in combined for marker in _AUTH_QUOTA_MARKERS):
         return "auth_quota"
@@ -285,7 +318,11 @@ class GroqManager:
                 GROQ_CHAT_COMPLETIONS_URL, headers=headers, json=payload, timeout=REQUEST_TIMEOUT_SECONDS,
             )
             if response.status_code != 200:
-                raise _GroqHTTPError(response.status_code, response.text[:300])
+                # 500 chars, not 300 — _classify_error's empty-failed_generation
+                # check needs that field to survive the cutoff, and it sits
+                # after ~180 chars of "message"/"type"/"code" preamble in a
+                # json_validate_failed body.
+                raise _GroqHTTPError(response.status_code, response.text[:500])
             body = response.json()
             choices = body.get("choices") or []
             text = choices[0]["message"]["content"] if choices else None

@@ -71,20 +71,33 @@ from providers.llm.groq_provider import GroqLLMProvider  # noqa: E402
 from providers.tts.sarvam_tts_provider import SarvamTTSProvider  # noqa: E402
 from providers.video.avatar_provider import AvatarFailoverProvider  # noqa: E402
 from providers.visual.cloudflare_flux_provider import CloudflareFluxVisualProvider  # noqa: E402
-from rendering.adapters.moviepy_video_renderer import MoviePyVideoRenderer  # noqa: E402
+from rendering.adapters.ffmpeg_video_renderer import FfmpegVideoRenderer  # noqa: E402
 
 # --------------------------------------------------------------------------- constants
 
-TARGET_LANGUAGES: list[LanguageCode] = [LanguageCode.EN, LanguageCode.HI, LanguageCode.MR, LanguageCode.BN]
+# Bengali dropped 2026-08-20, temporarily: Step 1 runs one extraction +
+# script-generation + verification pass per target language, sequentially,
+# all against the same shared Groq TPM budget (see groq_client.py's module
+# docstring) — even with 3 keys in the pool, a 4th language's worth of
+# calls was enough to exhaust it. Re-add LanguageCode.BN here (and its
+# label below) once the key pool has more headroom.
+TARGET_LANGUAGES: list[LanguageCode] = [LanguageCode.EN, LanguageCode.HI, LanguageCode.MR]
 LANGUAGE_LABELS: dict[LanguageCode, str] = {
     LanguageCode.EN: "English",
     LanguageCode.HI: "हिन्दी (Hindi)",
     LanguageCode.MR: "मराठी (Marathi)",
-    LanguageCode.BN: "বাংলা (Bengali)",
+    LanguageCode.BN: "বাংলা (Bengali)",  # kept for when BN is re-added to TARGET_LANGUAGES
 }
 
 DEFAULT_AUDIENCE = "general public"
-DEFAULT_DURATION_SECONDS = 60
+# Capped to a short-form 30-40s so the whole video (hook + B-roll body)
+# stays watchable in one sitting — SCRIPT_GENERATION_PROMPT's target_words
+# (= duration * 2.3, see groq_provider.py) keeps the narration itself
+# summarized to fit, rather than writing a longer script and truncating it
+# after the fact.
+MIN_DURATION_SECONDS = 30
+MAX_DURATION_SECONDS = 40
+DEFAULT_DURATION_SECONDS = 35
 BROLL_IMAGE_COUNT = 3
 HOOK_SCENE_DURATION_SECONDS = 5.0
 
@@ -132,7 +145,7 @@ class Providers:
     tts: SarvamTTSProvider
     avatar: AvatarFailoverProvider
     visual: CloudflareFluxVisualProvider
-    renderer: MoviePyVideoRenderer
+    renderer: FfmpegVideoRenderer
     init_error: str | None
 
 
@@ -183,7 +196,7 @@ def get_providers() -> Providers:
             tts=SarvamTTSProvider(),
             avatar=AvatarFailoverProvider(),
             visual=CloudflareFluxVisualProvider(),
-            renderer=MoviePyVideoRenderer(),
+            renderer=FfmpegVideoRenderer(),
             init_error=str(exc),
         )
 
@@ -192,7 +205,7 @@ def get_providers() -> Providers:
         tts=SarvamTTSProvider(),
         avatar=AvatarFailoverProvider(),
         visual=CloudflareFluxVisualProvider(),
-        renderer=MoviePyVideoRenderer(),
+        renderer=FfmpegVideoRenderer(),
         init_error=None,
     )
 
@@ -222,12 +235,25 @@ def _derive_project_name(notice_text: str) -> str:
 # --------------------------------------------------------------------------- Step 0: ingestion pipeline
 
 def run_extraction_and_drafting(providers: Providers, notice_text: str, audience: str, duration_seconds: int) -> None:
-    """Fact extraction -> per-language script + claim generation ->
-    verification -> one automatic regeneration pass for any language with
-    blocking failures (the same verify -> regenerate -> verify loop
-    documented in docs/workflow.md). Writes results into
-    `st.session_state`; raises on a genuinely catastrophic failure
-    (caller wraps this in try/except and shows `st.error`)."""
+    """Fact extraction -> ONE combined multi-language script + claim
+    generation call -> per-language verification -> one automatic
+    regeneration pass for any language with blocking failures (the same
+    verify -> regenerate -> verify loop documented in docs/workflow.md).
+    Writes results into `st.session_state`; raises on a genuinely
+    catastrophic failure (caller wraps this in try/except and shows
+    `st.error`).
+
+    Script generation uses `generate_scripts_with_claims_multi()` (one
+    Groq call for every TARGET_LANGUAGES entry) rather than looping
+    `generate_script_with_claims()` per language — see that method's
+    docstring in groq_provider.py and providers/llm/README.md's
+    "Reducing Groq TPM usage" section: the fact ledger + document context
+    + prompt template were being resent in full once per language,
+    competing for the same shared Groq TPM budget. Verification stays
+    per-language (each language's claims are already batched into one
+    verify_batch() call each, and only the languages with actual blocking
+    issues pay for a regeneration pass, so there's no equivalent
+    redundancy to remove there)."""
     assert providers.llm is not None  # guarded by the caller before this is ever invoked
 
     project = Project(name=_derive_project_name(notice_text), target_languages=TARGET_LANGUAGES)
@@ -247,12 +273,15 @@ def run_extraction_and_drafting(providers: Providers, notice_text: str, audience
             status.update(label="No facts could be extracted from the supplied text.", state="error")
             return
 
+        all_labels = " + ".join(LANGUAGE_LABELS[lang] for lang in TARGET_LANGUAGES)
+        status.write(f"✍️ Drafting {all_labels} scripts in one combined call…")
+        scripts_and_claims = providers.llm.generate_scripts_with_claims_multi(
+            source_facts, notice_text, TARGET_LANGUAGES, audience, duration_seconds, project_id=project.id,
+        )
+
         for lang in TARGET_LANGUAGES:
             label = LANGUAGE_LABELS[lang]
-            status.write(f"✍️ Drafting the {label} script…")
-            script, lang_claims = providers.llm.generate_script_with_claims(
-                source_facts, notice_text, lang, audience, duration_seconds, project_id=project.id,
-            )
+            script, lang_claims = scripts_and_claims[lang]
 
             status.write(f"🔍 Verifying {label} claims…")
             results = providers.llm.verify_batch(lang_claims, source_facts) if lang_claims else []
@@ -352,9 +381,11 @@ def _produce_avatar_hook(
     providers: Providers, avatar_image_path: str, script: Script, project: Project, storyboard_id: str,
 ) -> tuple:
     """TTS -> hook/body slice -> avatar hook clip. Runs entirely inside a
-    worker thread (see run_render_pipeline) in parallel with
-    _produce_broll(), since neither branch depends on the other's
-    output. Deliberately never calls `status.write()`/any `st.*`
+    worker thread (see run_multi_language_render_pipeline) in parallel
+    with _produce_broll(), since neither branch depends on the other's
+    output. Called once per render — against the reference language only,
+    see run_multi_language_render_pipeline — not once per selected
+    language. Deliberately never calls `status.write()`/any `st.*`
     function — Streamlit's UI calls are not safe to make off the main
     script-run thread, so all progress messages are emitted by the
     caller, only before/after the parallel section."""
@@ -400,48 +431,97 @@ def _produce_broll(providers: Providers, script: Script, audience: str, project:
         return list(pool.map(_one, enumerate(broll_prompts)))
 
 
-def run_render_pipeline(
-    providers: Providers, project: Project, script: Script, audience: str, presenter: str, status,
-) -> tuple:
-    """Avatar hook (TTS -> slice -> Hedra/D-ID) and B-roll (prompt
-    drafting -> N concurrent Cloudflare calls) run in parallel — via
-    _produce_avatar_hook()/_produce_broll() — since neither branch
-    depends on the other's output; only MoviePy composition needs both
-    finished. Manually sequences Phases 2-4 in-process per the Phase 5
-    brief (no `WorkflowEngine` implementation exists yet). Raises on
-    failure — the caller shows `st.error`; unlike the provider layer's
-    own internal fallbacks, a broken final render has nothing further to
-    degrade to."""
+def run_multi_language_render_pipeline(
+    providers: Providers,
+    project: Project,
+    scripts: dict[LanguageCode, Script],
+    languages: list[LanguageCode],
+    audience: str,
+    presenter: str,
+    status,
+) -> dict[LanguageCode, tuple]:
+    """Renders every selected language from ONE shared avatar hook clip +
+    ONE shared B-roll image set, generated once against a single
+    "reference" language's script (English when available, else the
+    first selected language) — both are visual-only and don't actually
+    depend on which language's audio ends up under them. Every other
+    selected language then only needs its own TTS narration synthesized
+    and swapped in (`compose_final_video`'s `hook_audio_path` param) —
+    turning N full language renders into 1 avatar-animation call + 1
+    B-roll image set + N cheap TTS/composite passes, instead of N of
+    everything.
+
+    Trade-off, deliberate and documented (see
+    FfmpegVideoRenderer.compose_final_video's docstring): the avatar's
+    lip movements are only phoneme-accurate for the reference language —
+    every other language gets the same visual motion with its own audio
+    swapped in underneath, "reporter over B-roll" style, which is also
+    what the Tier-3 static fallback already looks like whenever
+    Hedra/D-ID are unavailable.
+
+    Manually sequences Phases 2-4 in-process per the Phase 5 brief (no
+    `WorkflowEngine` implementation exists yet). Raises on failure — the
+    caller shows `st.error`; unlike the provider layer's own internal
+    fallbacks, a broken final render has nothing further to degrade to."""
     assert providers.llm is not None
+    if not languages:
+        raise ValueError("run_multi_language_render_pipeline: no languages selected")
+
     storyboard_id = str(uuid.uuid4())
     avatar_image_path = get_presenter_image_path(presenter)
 
-    status.write("🎬 Generating the talking-avatar hook and B-roll visuals in parallel…")
+    ref_lang = LanguageCode.EN if LanguageCode.EN in scripts else languages[0]
+    ref_script = scripts[ref_lang]
+    ref_label = LANGUAGE_LABELS[ref_lang]
+
+    status.write(f"🎬 Generating the shared avatar hook + B-roll visuals once (from the {ref_label} script)…")
     with ThreadPoolExecutor(max_workers=2) as executor:
         avatar_future = executor.submit(
-            _produce_avatar_hook, providers, avatar_image_path, script, project, storyboard_id,
+            _produce_avatar_hook, providers, avatar_image_path, ref_script, project, storyboard_id,
         )
-        broll_future = executor.submit(_produce_broll, providers, script, audience, project, storyboard_id)
+        broll_future = executor.submit(_produce_broll, providers, ref_script, audience, project, storyboard_id)
 
-        avatar_asset, body_audio_path = avatar_future.result()
+        ref_avatar_asset, ref_body_audio_path = avatar_future.result()
         broll_image_paths = broll_future.result()
 
-    status.write("🖼️ Stitching the final video (avatar hook + Ken Burns B-roll + captions)…")
-    video_asset = providers.renderer.compose_final_video(
-        avatar_asset.storage_path,  # type: ignore[arg-type]
-        broll_image_paths,
-        body_audio_path,
-        project_id=project.id,
-        storyboard_id=storyboard_id,
-        language=script.language,
-        captions_text=script.narration_text,
-        output_name=f"{project.id}_{script.language.value}",
-    )
+    results: dict[LanguageCode, tuple] = {}
+    for lang in languages:
+        label = LANGUAGE_LABELS[lang]
+        script = scripts[lang]
 
-    status.write("📝 Exporting captions…")
-    captions_srt = providers.renderer.export_captions(script, None, "srt")
+        if lang == ref_lang:
+            status.write(f"🖼️ Stitching {label} (the reference render — original lip-synced audio)…")
+            hook_audio_override_path = None
+            body_audio_path = ref_body_audio_path
+        else:
+            status.write(f"🔊 Synthesizing {label} narration and swapping it onto the shared video…")
+            audio_asset = providers.tts.synthesize(
+                script.narration_text, lang, project_id=project.id, script_id=script.id,
+            )
+            hook_audio_override_path, body_audio_path = providers.tts.process_and_slice_audio(audio_asset.storage_path)
+            if body_audio_path is None:
+                raise RuntimeError(
+                    f"{label}: the narration is too short to split into a hook clip and a B-roll body "
+                    "track — increase the target duration in the sidebar and try again."
+                )
+            status.write(f"🖼️ Stitching {label}…")
 
-    return video_asset, captions_srt
+        video_asset = providers.renderer.compose_final_video(
+            ref_avatar_asset.storage_path,  # type: ignore[arg-type]
+            broll_image_paths,
+            body_audio_path,
+            project_id=project.id,
+            storyboard_id=storyboard_id,
+            language=lang,
+            captions_text=script.narration_text,
+            output_name=f"{project.id}_{lang.value}",
+            hook_audio_path=hook_audio_override_path,
+        )
+        captions_srt = providers.renderer.export_captions(script, None, "srt")
+        results[lang] = (video_asset, captions_srt)
+        status.write(f"✅ {label} video ready.")
+
+    return results
 
 
 # --------------------------------------------------------------------------- UI: sidebar (ingestion)
@@ -468,7 +548,10 @@ def render_sidebar(providers: Providers) -> dict | None:
             )
             uploaded = st.file_uploader("…or upload a .txt notice", type=["txt"])
             audience = st.text_input("Audience", value=DEFAULT_AUDIENCE)
-            duration = st.slider("Target duration (seconds)", 30, 120, DEFAULT_DURATION_SECONDS, step=5)
+            duration = st.slider(
+                "Target duration (seconds)",
+                MIN_DURATION_SECONDS, MAX_DURATION_SECONDS, DEFAULT_DURATION_SECONDS, step=5,
+            )
             submitted = st.form_submit_button("Extract & Draft Scripts", type="primary", use_container_width=True)
 
         if not submitted:
@@ -565,39 +648,51 @@ def render_step2(providers: Providers) -> None:
     langs = list(scripts.keys())
     col_lang, col_presenter = st.columns(2)
     with col_lang:
-        lang = st.selectbox("Language to render", langs, format_func=lambda l: LANGUAGE_LABELS[l], key="render_language")
+        selected_langs = st.multiselect(
+            "Languages to render",
+            langs,
+            default=langs[:1],
+            format_func=lambda l: LANGUAGE_LABELS[l],
+            key="render_languages",
+            help=(
+                "The avatar hook clip and B-roll images are generated once and reused across every "
+                "language selected here — only the narration audio is swapped per language."
+            ),
+        )
     with col_presenter:
         presenter = st.selectbox("Presenter", list(PRESENTER_IMAGE_PATHS), key="render_presenter")
 
-    results = st.session_state.verification.get(lang, [])
-    blocking = [r for r in results if r.is_blocking]
+    blocking_by_lang = {
+        lang: [r for r in st.session_state.verification.get(lang, []) if r.is_blocking]
+        for lang in selected_langs
+    }
+    langs_with_blocking = [lang for lang, blocking in blocking_by_lang.items() if blocking]
     override = True
-    if blocking:
-        st.warning(
-            f"⚠️ {len(blocking)} unresolved blocking verification issue(s) for {LANGUAGE_LABELS[lang]}. "
-            "Resolve them in Step 1 (or override below) before rendering."
-        )
-        override = st.checkbox("Render anyway despite unresolved issues", value=False, key=f"override_{lang.value}")
+    if langs_with_blocking:
+        names = ", ".join(LANGUAGE_LABELS[lang] for lang in langs_with_blocking)
+        st.warning(f"⚠️ Unresolved blocking verification issue(s) for: {names}. Resolve in Step 1 (or override below).")
+        override = st.checkbox("Render anyway despite unresolved issues", value=False, key="override_multi")
 
-    disabled = bool(blocking) and not override
+    disabled = not selected_langs or (bool(langs_with_blocking) and not override)
     submitted = st.button(
-        "🎬 Approve & Render Video", type="primary", use_container_width=True, disabled=disabled,
+        "🎬 Approve & Render Video(s)", type="primary", use_container_width=True, disabled=disabled,
     )
 
     if not submitted:
         return
 
-    script = scripts[lang]
     try:
-        with st.status(f"Rendering the {LANGUAGE_LABELS[lang]} video…", expanded=True) as status:
-            video_asset, captions_srt = run_render_pipeline(
-                providers, st.session_state.project, script, DEFAULT_AUDIENCE, presenter, status,
+        label = " + ".join(LANGUAGE_LABELS[lang] for lang in selected_langs)
+        with st.status(f"Rendering {label}…", expanded=True) as status:
+            rendered = run_multi_language_render_pipeline(
+                providers, st.session_state.project, scripts, selected_langs, DEFAULT_AUDIENCE, presenter, status,
             )
             status.update(label="Render complete.", state="complete")
-        st.session_state.rendered[lang] = {"video": video_asset, "captions_srt": captions_srt}
-        st.success(f"✅ {LANGUAGE_LABELS[lang]} video rendered.")
+        for lang, (video_asset, captions_srt) in rendered.items():
+            st.session_state.rendered[lang] = {"video": video_asset, "captions_srt": captions_srt}
+        st.success(f"✅ Rendered: {label}.")
     except Exception as exc:  # noqa: BLE001 - catastrophic render failure, shown to the officer per the brief
-        logger.exception("run_render_pipeline failed for language=%s", lang.value)
+        logger.exception("run_multi_language_render_pipeline failed for languages=%r", [l.value for l in selected_langs])
         st.error(f"Rendering failed: {exc}")
 
 

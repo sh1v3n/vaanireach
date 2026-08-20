@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import logging
 import re
+from typing import Any
 
 from core.interfaces.fact_extractor import FactExtractor
 from core.interfaces.script_generator import ScriptGenerator
@@ -161,6 +162,55 @@ grounded in
 No markdown fences, no commentary — the raw JSON object only.
 """
 
+# Combined variant of SCRIPT_GENERATION_PROMPT above, used by
+# generate_scripts_with_claims_multi() to produce every target language's
+# script in ONE call instead of one call per language — see that method's
+# docstring and providers/llm/README.md's "Reducing Groq TPM usage"
+# section for why. Same HOOK -> CONTEXT -> KEY FACTS -> CALL TO ACTION
+# structure and grounding rules per language, just requested for all of
+# them against one shared copy of the facts/context instead of N copies.
+MULTI_LANGUAGE_SCRIPT_GENERATION_PROMPT = """You are writing a {duration}-second spoken-narration \
+video script for an Indian government outreach video, aimed at: {audience}, in EACH of these \
+languages: {languages_list}.
+
+Structure EACH language's script as a short STORY, not a list of facts, following this arc:
+1. HOOK (the opening 1-2 sentences) — an attention-grabbing line that makes the viewer want to \
+keep watching: a relatable question, a striking number, or a direct address to the viewer. This \
+exact opening becomes the video's first 5 spoken seconds on screen, so it must stand alone and \
+immediately signal what this is about — never start with a dry "This notice concerns..." opener.
+2. CONTEXT — one or two sentences on why this matters to {audience}.
+3. THE KEY FACTS — the concrete, checkable details (amounts, dates, eligibility, how to apply), \
+woven naturally into the story rather than listed like a form.
+4. CALL TO ACTION — a short, clear closing line telling the viewer exactly what to do next.
+
+Ground every sentence ONLY in the facts below — never invent a date, amount, name, or number \
+that isn't listed. Aim for roughly {target_words} words per language (natural spoken pace). Write \
+warmly and conversationally, like a trusted person telling you something useful — not like a \
+legal notice. Write each language's script as an ORIGINAL composition in that language (natural, \
+idiomatic phrasing) — NOT a mechanical translation of one master script; each should independently \
+follow the arc above and may vary in structure/phrasing from the others.
+
+SOURCE FACTS (id, type, criticality, value, raw text):
+{facts_block}
+
+ORIGINAL DOCUMENT CONTEXT (for tone/context only — facts above are authoritative):
+{source_context}
+
+Return ONLY a JSON object with exactly one key per language code ({language_codes_list}), each \
+value an object with exactly these keys:
+- "narration_text": the full narration script in THAT language, as one string, following the \
+HOOK -> CONTEXT -> KEY FACTS -> CALL TO ACTION arc above
+- "claims": an array of every checkable statement that language's narration makes, each an object with:
+  - "claim_text": the exact sentence/phrase from that language's narration_text
+  - "claim_type": a short free-form label, e.g. "amount", "deadline", "eligibility", "location"
+  - "criticality": "low" | "medium" | "high" | "critical"
+  - "source_fact_ids": array of the fact ids (from the bracketed [id] above) this claim is \
+grounded in
+
+No markdown fences, no commentary — the raw JSON object only, with all {num_languages} language \
+keys present.
+"""
+
 SCRIPT_REGENERATION_PROMPT = """Revise the {duration}-second {language} narration script \
 below for audience: {audience}. Verification found problems — fix ONLY what's listed, \
 keep everything else (including its HOOK -> CONTEXT -> KEY FACTS -> CALL TO ACTION story \
@@ -235,8 +285,82 @@ No markdown fences, no commentary — return every claim, in any order.
 
 # --------------------------------------------------------------------------- json -> model helpers
 
-def _render_pages_for_prompt(pages: list[DocumentPage]) -> str:
-    return "\n\n".join(f"--- Page {p.page_number} ---\n{p.raw_text}" for p in pages)
+# Groq's shared per-key budget is a hard 8,000 tokens/minute (see
+# groq_client.py's module docstring) — a single fact-extraction call over a
+# large document can burn nearly all of it on input alone, leaving too
+# little for the JSON output and causing it to get cut off mid-generation
+# (a 400 json_validate_failed with an empty failed_generation, verified
+# live against a ~24KB real circular: one call consumed 7,729/8,000 TPM on
+# input, then failed). extract_facts() below splits the document into
+# EXTRACTION_CHUNK_CHARS-sized pieces and extracts facts chunk-by-chunk
+# instead of in one call, so each individual request stays a small
+# fraction of the budget regardless of total document size.
+EXTRACTION_CHUNK_CHARS = 9000  # ~2,250 tokens of input per chunk — raised from
+# 6000 on 2026-08-20 (fewer, larger chunks = fewer separate calls = less
+# repeated per-call template overhead) once facts_block was also capped
+# below, which reduced the pressure that motivated the smaller original
+# size in the first place. Still comfortably clear of the 8,000 TPM
+# ceiling on any single key.
+EXTRACTION_CHUNK_OVERLAP_CHARS = 200  # small overlap so a fact split across
+# a chunk boundary still appears whole in at least one chunk
+
+
+def _chunk_text(text: str, *, chunk_chars: int, overlap_chars: int) -> list[str]:
+    """Splits `text` into overlapping chunks, preferring to break on a
+    paragraph boundary (blank line) near the target size rather than
+    mid-sentence, so a single fact is unlikely to be sliced in half."""
+    if len(text) <= chunk_chars:
+        return [text]
+
+    chunks: list[str] = []
+    start = 0
+    n = len(text)
+    while start < n:
+        end = min(start + chunk_chars, n)
+        if end < n:
+            break_at = text.rfind("\n\n", start, end)
+            if break_at > start + chunk_chars // 2:  # don't shrink a chunk to near-nothing
+                end = break_at
+        chunks.append(text[start:end])
+        if end >= n:
+            break
+        start = max(end - overlap_chars, start + 1)
+    return chunks
+
+
+def _iter_extraction_chunks(pages: list[DocumentPage]) -> list[str]:
+    """One prompt-ready chunk per page-chunk, each carrying its own
+    "--- Page N ---" header so a fact's page_number stays correct even
+    when a single long page is split across multiple extraction calls."""
+    chunks: list[str] = []
+    for page in pages:
+        for piece in _chunk_text(
+            page.raw_text, chunk_chars=EXTRACTION_CHUNK_CHARS, overlap_chars=EXTRACTION_CHUNK_OVERLAP_CHARS
+        ):
+            chunks.append(f"--- Page {page.page_number} ---\n{piece}")
+    return chunks
+
+
+# generate_script_with_claims embeds the fact ledger once PER LANGUAGE
+# (3 calls for EN/HI/MR — see dashboard/app.py's TARGET_LANGUAGES), so an
+# uncapped ledger gets resent in full that many times, each one competing
+# for the same shared Groq TPM budget. verify()/verify_batch() already cap
+# theirs (facts[:20]/facts[:40] respectively) — this brings script
+# generation in line with that instead of being the one uncapped site.
+SCRIPT_GENERATION_FACTS_LIMIT = 40
+_CRITICALITY_RANK = {Criticality.CRITICAL: 0, Criticality.HIGH: 1, Criticality.MEDIUM: 2, Criticality.LOW: 3}
+
+
+def _prioritized_facts(facts: list[SourceFact], limit: int) -> list[SourceFact]:
+    """Caps `facts` to `limit` entries, keeping the highest-criticality
+    (then highest-confidence) facts rather than truncating in whatever
+    order extraction happened to return them — so capping the prompt
+    size doesn't silently prefer dropping a critical deadline over a
+    low-priority background detail just because of extraction order."""
+    if len(facts) <= limit:
+        return facts
+    ordered = sorted(facts, key=lambda f: (_CRITICALITY_RANK.get(f.criticality, 4), -f.confidence))
+    return ordered[:limit]
 
 
 def _render_facts_for_prompt(facts: list[SourceFact]) -> str:
@@ -285,6 +409,44 @@ def _claim_from_json(item: dict, *, project_id: str, script_id: str, language: L
         claim_type=str(item.get("claim_type", "statement")).strip().lower(),
         criticality=criticality,
     )
+
+
+def _script_and_claims_from_json(
+    raw: dict,
+    *,
+    project_id: str,
+    target_language: LanguageCode,
+    audience: str,
+    desired_duration_seconds: int,
+    source_facts: list[SourceFact],
+) -> tuple[Script, list[Claim]]:
+    """Shared Script/Claim construction for one language's
+    {"narration_text", "claims"} entry — used by both
+    generate_script_with_claims() (one entry, its own call) and
+    generate_scripts_with_claims_multi() (one entry per language, sliced
+    out of one combined call's response), so the two stay in lockstep
+    rather than drifting into two slightly-different implementations."""
+    script = Script(
+        project_id=project_id,
+        language=target_language,
+        audience=audience,
+        target_duration_seconds=desired_duration_seconds,
+        narration_text=str(raw.get("narration_text", "")).strip(),
+        source_fact_ids=[f.id for f in source_facts],
+        generator_name=GROQ_MODEL,
+        version=1,
+        status=ScriptStatus.DRAFT,
+    )
+
+    claims: list[Claim] = []
+    for item in raw.get("claims", []) if isinstance(raw.get("claims"), list) else []:
+        try:
+            claims.append(_claim_from_json(item, project_id=project_id, script_id=script.id, language=target_language))
+        except Exception as exc:  # noqa: BLE001 - one malformed claim must not drop the rest
+            logger.warning("_script_and_claims_from_json: skipping malformed claim %r: %s", item, exc)
+
+    script.claim_ids = [c.id for c in claims]
+    return script, claims
 
 
 def _relevant_facts(claim: Claim, source_facts: list[SourceFact]) -> list[SourceFact]:
@@ -341,26 +503,46 @@ class GroqLLMProvider(FactExtractor, ScriptGenerator, TranslationProvider, Verif
             return []
 
         fact_types = ", ".join(t.value for t in FactType)
-        prompt = FACT_EXTRACTION_PROMPT.format(
-            fact_types=fact_types, document_text=_render_pages_for_prompt(pages)
-        )
-
-        try:
-            raw = self.manager.generate_json(prompt, model=GROQ_MODEL, temperature=0.1)
-        except GroqAllKeysExhaustedError:
-            logger.error("extract_facts: all Groq keys exhausted — returning empty fact ledger")
-            return []
-
-        if isinstance(raw, dict):
-            raw = raw.get("facts", [])
-        items = raw if isinstance(raw, list) else []
+        chunks = _iter_extraction_chunks(pages)
 
         facts: list[SourceFact] = []
-        for item in items:
+        seen: set[tuple[str, str]] = set()
+        chunks_ok = 0
+        for i, chunk_text in enumerate(chunks):
+            prompt = FACT_EXTRACTION_PROMPT.format(fact_types=fact_types, document_text=chunk_text)
             try:
-                facts.append(_fact_from_json(item, document_id=document_id, project_id=project_id))
-            except Exception as exc:  # noqa: BLE001 - one malformed fact must not drop the rest
-                logger.warning("extract_facts: skipping malformed fact %r: %s", item, exc)
+                raw = self.manager.generate_json(prompt, model=GROQ_MODEL, temperature=0.1)
+            except GroqAllKeysExhaustedError as exc:
+                # One exhausted chunk shouldn't discard facts already
+                # extracted from the others — log and keep going.
+                logger.warning(
+                    "extract_facts: chunk %d/%d exhausted Groq keys, skipping (%s)", i + 1, len(chunks), exc
+                )
+                continue
+            chunks_ok += 1
+
+            if isinstance(raw, dict):
+                raw = raw.get("facts", [])
+            items = raw if isinstance(raw, list) else []
+
+            for item in items:
+                try:
+                    fact = _fact_from_json(item, document_id=document_id, project_id=project_id)
+                except Exception as exc:  # noqa: BLE001 - one malformed fact must not drop the rest
+                    logger.warning("extract_facts: skipping malformed fact %r: %s", item, exc)
+                    continue
+                # The chunk overlap can surface the same fact twice — collapse it
+                # by (type, normalized value) so the ledger stays de-duplicated.
+                dedupe_key = (fact.fact_type.value, fact.value.strip().lower())
+                if dedupe_key in seen:
+                    continue
+                seen.add(dedupe_key)
+                facts.append(fact)
+
+        if chunks_ok == 0:
+            logger.error(
+                "extract_facts: all %d chunk(s) exhausted Groq keys — returning empty fact ledger", len(chunks)
+            )
         return facts
 
     # ---------------------------------------------------------------- ScriptGenerator
@@ -400,7 +582,7 @@ class GroqLLMProvider(FactExtractor, ScriptGenerator, TranslationProvider, Verif
             audience=audience,
             duration=desired_duration_seconds,
             target_words=target_words,
-            facts_block=_render_facts_for_prompt(source_facts),
+            facts_block=_render_facts_for_prompt(_prioritized_facts(source_facts, SCRIPT_GENERATION_FACTS_LIMIT)),
             source_context=(source_context or "")[:4000],
         )
 
@@ -409,27 +591,85 @@ class GroqLLMProvider(FactExtractor, ScriptGenerator, TranslationProvider, Verif
             logger.warning("generate_script: expected a JSON object, got %s", type(raw))
             raw = {}
 
-        script = Script(
-            project_id=project_id,
-            language=target_language,
-            audience=audience,
-            target_duration_seconds=desired_duration_seconds,
-            narration_text=str(raw.get("narration_text", "")).strip(),
-            source_fact_ids=[f.id for f in source_facts],
-            generator_name=GROQ_MODEL,
-            version=1,
-            status=ScriptStatus.DRAFT,
+        return _script_and_claims_from_json(
+            raw, project_id=project_id, target_language=target_language, audience=audience,
+            desired_duration_seconds=desired_duration_seconds, source_facts=source_facts,
         )
 
-        claims: list[Claim] = []
-        for item in raw.get("claims", []) if isinstance(raw.get("claims"), list) else []:
-            try:
-                claims.append(_claim_from_json(item, project_id=project_id, script_id=script.id, language=target_language))
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("generate_script: skipping malformed claim %r: %s", item, exc)
+    def generate_scripts_with_claims_multi(
+        self,
+        source_facts: list[SourceFact],
+        source_context: str,
+        target_languages: list[LanguageCode],
+        audience: str,
+        desired_duration_seconds: int,
+        *,
+        project_id: str,
+    ) -> dict[LanguageCode, tuple[Script, list[Claim]]]:
+        """Generates every language's narration+claims in ONE Groq call
+        instead of one call per language (what `generate_script_with_claims`
+        does) — the single biggest lever for reducing this pipeline's Groq
+        TPM usage (see providers/llm/README.md): the fact ledger +
+        source-document-context + prompt-template overhead was being
+        resent in full once per language, all competing for the same
+        shared per-key budget (groq_client.py's module docstring); this
+        sends it once regardless of how many languages are requested.
 
-        script.claim_ids = [c.id for c in claims]
-        return script, claims
+        Not a hard all-or-nothing call: if the combined response is
+        missing a language (a partial/malformed JSON completion, or the
+        combined call failing outright) that language falls back to its
+        own individual `generate_script_with_claims` call rather than the
+        whole batch failing — a rare degraded case shouldn't cost every
+        other language its script too."""
+        if not target_languages:
+            return {}
+
+        target_words = max(40, int(desired_duration_seconds * 2.3))
+        language_codes = [lang.value for lang in target_languages]
+        prompt = MULTI_LANGUAGE_SCRIPT_GENERATION_PROMPT.format(
+            audience=audience,
+            duration=desired_duration_seconds,
+            target_words=target_words,
+            languages_list=", ".join(language_codes),
+            language_codes_list=", ".join(f'"{code}"' for code in language_codes),
+            num_languages=len(language_codes),
+            facts_block=_render_facts_for_prompt(_prioritized_facts(source_facts, SCRIPT_GENERATION_FACTS_LIMIT)),
+            source_context=(source_context or "")[:4000],
+        )
+
+        raw: Any = None
+        try:
+            raw = self.manager.generate_json(prompt, model=GROQ_MODEL, temperature=0.5)
+        except (GroqAllKeysExhaustedError, ValueError) as exc:
+            logger.warning(
+                "generate_scripts_with_claims_multi: combined call failed (%s) — every language "
+                "will fall back to an individual call", exc,
+            )
+
+        results: dict[LanguageCode, tuple[Script, list[Claim]]] = {}
+        if isinstance(raw, dict):
+            for lang in target_languages:
+                entry = raw.get(lang.value)
+                if not isinstance(entry, dict) or not str(entry.get("narration_text", "")).strip():
+                    continue
+                results[lang] = _script_and_claims_from_json(
+                    entry, project_id=project_id, target_language=lang, audience=audience,
+                    desired_duration_seconds=desired_duration_seconds, source_facts=source_facts,
+                )
+
+        missing = [lang for lang in target_languages if lang not in results]
+        if missing:
+            logger.warning(
+                "generate_scripts_with_claims_multi: %d/%d language(s) missing from the combined "
+                "response (%s) — generating them individually",
+                len(missing), len(target_languages), ", ".join(l.value for l in missing),
+            )
+            for lang in missing:
+                results[lang] = self.generate_script_with_claims(
+                    source_facts, source_context, lang, audience, desired_duration_seconds, project_id=project_id,
+                )
+
+        return results
 
     def regenerate_script(
         self,
