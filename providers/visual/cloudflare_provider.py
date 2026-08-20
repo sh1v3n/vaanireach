@@ -90,16 +90,21 @@ class CloudflareVisualProvider(VisualProvider):
         rather than raising, so a storyboard's B-roll never fails to
         produce images just because the API call failed.
 
-        `width`/`height` (optional, default None = whatever the model's
-        own default is — 1024x1024 for FLUX.1-schnell, unspecified) let a
-        caller request a specific output aspect ratio, e.g.
-        providers/video/avatar_portrait.py requesting a 4:3 portrait so
-        the avatar clip it drives fits a landscape PiP box without
-        overflowing. The LocalCache key is still keyed on prompt text
-        alone (unchanged) — every current caller uses one fixed
-        width/height per distinct prompt, so this doesn't collide; a
-        caller requesting the same prompt at two different sizes would
-        need the cache key extended too, which isn't needed today."""
+        `width`/`height` (optional) let a caller request a specific
+        output aspect ratio — e.g. providers/video/avatar_portrait.py
+        requesting a 4:3 portrait so the avatar clip it drives fits a
+        landscape PiP box without overflowing. This is done by a local
+        Pillow center-crop AFTER generation, not a request parameter:
+        verified live (2026-08-20) that FLUX.1-schnell's Workers AI
+        endpoint flatly rejects a width/height in the request body
+        (`400: Additional or unevaluated properties '/width, /height'
+        ... not allowed`) — it always returns a 1024x1024 square, so
+        getting a non-square shape means cropping that square ourselves.
+        The LocalCache key is still keyed on prompt text alone
+        (unchanged) — every current caller uses one fixed width/height
+        per distinct prompt, so this doesn't collide; a caller requesting
+        the same prompt at two different sizes would need the cache key
+        extended too, which isn't needed today."""
         prompt = (prompt or "").strip()
         if not prompt:
             raise ValueError("generate_image: prompt is empty")
@@ -122,7 +127,9 @@ class CloudflareVisualProvider(VisualProvider):
             return asset
 
         try:
-            image_bytes = self._call_workers_ai(prompt, width=width, height=height)
+            image_bytes = self._call_workers_ai(prompt)
+            if width is not None and height is not None:
+                image_bytes = _center_crop(image_bytes, width, height)
             stored_path = self.cache.put(prompt, image_bytes)
             asset.storage_path = stored_path
             asset.provider_name = f"cloudflare:{self.model}"
@@ -159,21 +166,15 @@ class CloudflareVisualProvider(VisualProvider):
 
     # ---------------------------------------------------------------- Workers AI call
 
-    def _call_workers_ai(self, prompt: str, *, width: int | None = None, height: int | None = None) -> bytes:
+    def _call_workers_ai(self, prompt: str) -> bytes:
         if not self.account_id or not self.api_token:
             raise CloudflareRequestError("CLOUDFLARE_ACCOUNT_ID/CLOUDFLARE_API_TOKEN not configured")
 
         url = f"https://api.cloudflare.com/client/v4/accounts/{self.account_id}/ai/run/{self.model}"
         headers = {"Authorization": f"Bearer {self.api_token}"}
 
-        payload: dict[str, object] = {"prompt": prompt}
-        if width is not None:
-            payload["width"] = width
-        if height is not None:
-            payload["height"] = height
-
         try:
-            response = self._session.post(url, headers=headers, json=payload, timeout=REQUEST_TIMEOUT_SECONDS)
+            response = self._session.post(url, headers=headers, json={"prompt": prompt}, timeout=REQUEST_TIMEOUT_SECONDS)
         except requests.exceptions.RequestException as exc:
             raise CloudflareRequestError(f"network error calling Cloudflare Workers AI: {exc}") from exc
 
@@ -201,3 +202,38 @@ def _safe_json(response: requests.Response) -> dict:
         return body if isinstance(body, dict) else {}
     except ValueError:
         return {}
+
+
+def _center_crop(image_bytes: bytes, target_width: int, target_height: int) -> bytes:
+    """Resizes (preserving aspect, covering the target box) then
+    center-crops to exactly target_width x target_height — the same
+    "cover scale" approach rendering/adapters/moviepy_video_renderer.py
+    already uses for Ken Burns B-roll, applied here once at generation
+    time instead of per-frame. Re-encodes as JPEG (matching this
+    provider's `.jpg` cache extension) regardless of the source format."""
+    from io import BytesIO
+
+    from PIL import Image
+
+    with Image.open(BytesIO(image_bytes)) as img:
+        img = img.convert("RGB")
+        src_w, src_h = img.size
+        target_ratio = target_width / target_height
+        src_ratio = src_w / src_h
+
+        if src_ratio > target_ratio:
+            # source is relatively wider than target — scale to match height, crop width
+            scale_h = target_height
+            scale_w = round(src_w * (target_height / src_h))
+        else:
+            scale_w = target_width
+            scale_h = round(src_h * (target_width / src_w))
+        img = img.resize((scale_w, scale_h))
+
+        left = (scale_w - target_width) // 2
+        top = (scale_h - target_height) // 2
+        img = img.crop((left, top, left + target_width, top + target_height))
+
+        buf = BytesIO()
+        img.save(buf, format="JPEG", quality=92)
+        return buf.getvalue()

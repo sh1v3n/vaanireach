@@ -18,9 +18,48 @@ load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 from core.models.enums import GenerationStatus, NarrativeRole, SceneType  # noqa: E402
 from core.models.storyboard import Scene  # noqa: E402
-from providers.visual.cloudflare_provider import CloudflareVisualProvider  # noqa: E402
+from providers.visual.cloudflare_provider import CloudflareVisualProvider, _center_crop  # noqa: E402
 
 _HAS_CREDS = bool(os.environ.get("CLOUDFLARE_ACCOUNT_ID")) and bool(os.environ.get("CLOUDFLARE_API_TOKEN"))
+
+
+def _make_test_image_bytes(width: int, height: int) -> bytes:
+    from io import BytesIO
+
+    from PIL import Image
+
+    img = Image.new("RGB", (width, height), (200, 100, 50))
+    buf = BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def test_center_crop_produces_exact_requested_dimensions():
+    """Regression guard for the real bug this replaced: FLUX.1-schnell's
+    Workers AI endpoint rejects a width/height request parameter outright
+    (verified live, 2026-08-20) — dimension control has to happen via a
+    local crop after generation, not a request field."""
+    from PIL import Image
+    from io import BytesIO
+
+    source = _make_test_image_bytes(1024, 1024)  # the model's real, fixed default output shape
+    cropped = _center_crop(source, 1024, 768)
+    img = Image.open(BytesIO(cropped))
+    assert img.size == (1024, 768)
+
+
+def test_center_crop_handles_a_source_narrower_than_the_target_ratio():
+    """The 'source is relatively wider' branch and the 'source is
+    relatively taller/narrower' branch are both real code paths — cover
+    the one a square 1024x1024 source doesn't exercise (target wider
+    than source)."""
+    from PIL import Image
+    from io import BytesIO
+
+    source = _make_test_image_bytes(600, 1024)  # portrait source
+    cropped = _center_crop(source, 1024, 768)  # landscape target
+    img = Image.open(BytesIO(cropped))
+    assert img.size == (1024, 768)
 
 
 def _scene(text: str = "test") -> Scene:
@@ -49,6 +88,25 @@ def test_generates_a_real_image(tmp_path):
     from PIL import Image
     with Image.open(path) as img:
         img.verify()
+
+
+@pytest.mark.skipif(not _HAS_CREDS, reason="CLOUDFLARE_ACCOUNT_ID/CLOUDFLARE_API_TOKEN not set")
+def test_generates_a_real_image_at_a_requested_size(tmp_path):
+    """End-to-end real-network cover for the width/height path — a
+    different prompt than test_generates_a_real_image so this doesn't
+    hit the LocalCache and skip the actual generation+crop call."""
+    from providers.visual.local_cache import LocalCache
+
+    provider = CloudflareVisualProvider(cache=LocalCache(tmp_path, extension="jpg"))
+    asset = provider.generate_image(
+        "a friendly professional news anchor sitting at a desk, photorealistic portrait, sized test",
+        _scene(), project_id="test-project", width=1024, height=768,
+    )
+    assert asset.generation_status == GenerationStatus.COMPLETE
+    assert asset.storage_path is not None
+    from PIL import Image
+    with Image.open(asset.storage_path) as img:
+        assert img.size == (1024, 768)
 
 
 def test_falls_back_to_placeholder_on_bad_credentials(tmp_path):
