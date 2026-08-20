@@ -31,6 +31,7 @@ sample_data/generated/
 *.mp4
 *.wav
 *.mp3
+local_cache/
 
 # --- OS / editor ---
 .DS_Store
