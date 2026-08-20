@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from core.models.enums import GenerationStatus, LanguageCode, MediaAssetType, SceneType
+from core.models.enums import GenerationStatus, LanguageCode, MediaAssetType, NarrativeRole, SceneType
 from core.models.media import AudioAsset, MediaAsset
 from core.models.storyboard import Scene
 from providers.video.avatar_provider import ensure_fallback_asset
@@ -105,11 +105,13 @@ def test_render_derives_paths_from_scenes_and_produces_the_same_result(tmp_path,
 
     avatar_scene = Scene(
         storyboard_id=STORYBOARD_ID, order_index=0, scene_type=SceneType.AVATAR,
+        narrative_role=NarrativeRole.HOOK,
         narration_segment_text="hook narration", duration_seconds=3.0,
     )
     broll_scenes = [
         Scene(
             storyboard_id=STORYBOARD_ID, order_index=i + 1, scene_type=SceneType.IMAGE_MOTION,
+            narrative_role=NarrativeRole.CONTEXT,
             narration_segment_text=f"broll segment {i}", duration_seconds=2.0,
         )
         for i in range(len(dummy_inputs["broll_image_paths"]))

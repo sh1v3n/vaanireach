@@ -115,6 +115,37 @@ class SceneType(str, Enum):
     MIXED = "mixed"
 
 
+class NarrativeRole(str, Enum):
+    """The role a scene plays in the overall story arc, decided by the
+    StoryDirector — see core/interfaces/story_director.py. Distinct from
+    SceneType: a HOOK and a CTA can both end up SceneType.TEXT, but they
+    play very different narrative jobs."""
+
+    HOOK = "hook"
+    CONTEXT = "context"
+    PROBLEM = "problem"
+    ANNOUNCEMENT = "announcement"
+    BENEFIT = "benefit"
+    ELIGIBILITY = "eligibility"
+    HOW_TO = "how_to"
+    DEADLINE = "deadline"
+    URGENCY = "urgency"
+    CTA = "cta"
+    CLOSING = "closing"
+
+
+class TransitionType(str, Enum):
+    """How one scene visually hands off to the next. Maps onto ffmpeg's
+    xfade filter at Video Composition time (fade/slideleft/zoomin, etc.)
+    — no new dependency, ffmpeg (the one hard system dependency) already
+    supports this."""
+
+    CUT = "cut"
+    FADE = "fade"
+    SLIDE = "slide"
+    ZOOM = "zoom"
+
+
 class MediaAssetType(str, Enum):
     IMAGE = "image"
     VIDEO_CLIP = "video_clip"

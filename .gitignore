@@ -31,6 +31,11 @@ sample_data/generated/
 *.mp4
 *.wav
 *.mp3
+*.png
+*.jpg
+*.jpeg
+*.srt
+*.vtt
 local_cache/
 
 # --- Local manual test input/output (real documents, scratch results) ---

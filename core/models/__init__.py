@@ -14,11 +14,13 @@ from core.models.enums import (
     IngestionStatus,
     LanguageCode,
     MediaAssetType,
+    NarrativeRole,
     PipelineStage,
     ProjectStatus,
     SceneType,
     ScriptStatus,
     StoryboardStatus,
+    TransitionType,
     TranslationStatus,
     VerificationStatus,
     VerificationType,
@@ -26,6 +28,7 @@ from core.models.enums import (
 )
 from core.models.fact import SourceFact
 from core.models.media import AudioAsset, MediaAsset, VideoAsset
+from core.models.narrative import NarrativeArc, VisualConcept
 from core.models.project import Project
 from core.models.review import Approval, Review
 from core.models.script import Script
@@ -44,6 +47,8 @@ __all__ = [
     "Translation",
     "Storyboard",
     "Scene",
+    "NarrativeArc",
+    "VisualConcept",
     "MediaAsset",
     "AudioAsset",
     "VideoAsset",
@@ -63,6 +68,8 @@ __all__ = [
     "TranslationStatus",
     "StoryboardStatus",
     "SceneType",
+    "NarrativeRole",
+    "TransitionType",
     "MediaAssetType",
     "GenerationStatus",
     "VerificationType",

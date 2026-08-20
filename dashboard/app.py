@@ -59,6 +59,7 @@ import streamlit as st  # noqa: E402 - after load_dotenv()/sys.path setup, see m
 from core.models import (  # noqa: E402
     DocumentPage,
     LanguageCode,
+    NarrativeRole,
     Project,
     Scene,
     Script,
@@ -296,6 +297,7 @@ def get_avatar_source_image(providers: Providers) -> str:
     dashboard's lifetime, not once per render."""
     placeholder_scene = Scene(
         storyboard_id="shared-avatar-source", order_index=0, scene_type=SceneType.IMAGE_MOTION,
+        narrative_role=NarrativeRole.HOOK,
         narration_segment_text="avatar source portrait", duration_seconds=1.0,
     )
     asset = providers.visual.generate_image(AVATAR_IMAGE_PROMPT, placeholder_scene, project_id=SHARED_ASSET_PROJECT_ID)
@@ -331,6 +333,7 @@ def run_render_pipeline(providers: Providers, project: Project, script: Script, 
     status.write("🎭 Generating the talking-avatar hook clip…")
     hook_scene = Scene(
         storyboard_id=storyboard_id, order_index=0, scene_type=SceneType.AVATAR,
+        narrative_role=NarrativeRole.HOOK,
         narration_segment_text=script.narration_text[:300], duration_seconds=HOOK_SCENE_DURATION_SECONDS,
     )
     avatar_asset = providers.avatar.generate_avatar_hook(
@@ -346,6 +349,7 @@ def run_render_pipeline(providers: Providers, project: Project, script: Script, 
         status.write(f"🖌️ Generating B-roll image {i + 1}/{len(broll_prompts)}…")
         broll_scene = Scene(
             storyboard_id=storyboard_id, order_index=i + 1, scene_type=SceneType.IMAGE_MOTION,
+            narrative_role=NarrativeRole.CONTEXT,
             narration_segment_text=prompt, duration_seconds=1.0, visual_prompt=prompt,
         )
         image_asset = providers.visual.generate_image(prompt, broll_scene, project_id=project.id)

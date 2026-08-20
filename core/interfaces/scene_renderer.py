@@ -21,11 +21,14 @@ dashboard — only registering a new SceneRenderer here.
 """
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
 
 from core.models.enums import SceneType
 from core.models.media import MediaAsset
 from core.models.storyboard import Scene
+
+logger = logging.getLogger("vaanireach.core.scene_renderer")
 
 
 class SceneRenderer(ABC):
@@ -61,3 +64,29 @@ class SceneRendererRegistry:
             f"No SceneRenderer registered for scene_type={scene_type!r} — "
             "Phase 0 ships zero concrete renderers by design."
         )
+
+    def render_with_fallback(self, scene: Scene) -> MediaAsset:
+        """Tries every renderer registered for scene.scene_type, in
+        registration order, returning the first successful MediaAsset.
+        A renderer's exception is logged and the next candidate is tried —
+        this is what makes a lower-priority registration (e.g.
+        PilSceneRenderer after HtmlSceneRenderer) an automatic fallback
+        rather than something a caller has to implement itself."""
+        candidates = [r for r in self._renderers if r.supports(scene.scene_type)]
+        if not candidates:
+            raise LookupError(
+                f"No SceneRenderer registered for scene_type={scene.scene_type!r}"
+            )
+        last_exc: Exception | None = None
+        for renderer in candidates:
+            try:
+                return renderer.render_scene(scene)
+            except Exception as exc:  # noqa: BLE001 - any renderer failure falls through to the next candidate
+                logger.warning(
+                    "render_with_fallback: %s failed for scene_type=%r (%s) — trying next renderer",
+                    type(renderer).__name__, scene.scene_type, exc,
+                )
+                last_exc = exc
+        raise RuntimeError(
+            f"All {len(candidates)} renderer(s) failed for scene_type={scene.scene_type!r}"
+        ) from last_exc
