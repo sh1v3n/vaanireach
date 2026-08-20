@@ -69,7 +69,7 @@ from providers.llm.gemini_client import GeminiAllKeysExhaustedError, GeminiManag
 from providers.llm.gemini_provider import GeminiLLMProvider  # noqa: E402
 from providers.tts.sarvam_tts_provider import SarvamTTSProvider  # noqa: E402
 from providers.video.avatar_provider import AvatarFailoverProvider  # noqa: E402
-from providers.visual.gemini_imagen_provider import GeminiImagenProvider  # noqa: E402
+from providers.visual.huggingface_provider import HuggingFaceVisualProvider  # noqa: E402
 from rendering.adapters.moviepy_video_renderer import MoviePyVideoRenderer  # noqa: E402
 
 # --------------------------------------------------------------------------- constants
@@ -120,7 +120,7 @@ class Providers:
     llm: GeminiLLMProvider | None
     tts: SarvamTTSProvider
     avatar: AvatarFailoverProvider
-    imagen: GeminiImagenProvider | None
+    visual: HuggingFaceVisualProvider
     renderer: MoviePyVideoRenderer
     init_error: str | None
 
@@ -128,13 +128,21 @@ class Providers:
 @st.cache_resource(show_spinner=False)
 def get_providers() -> Providers:
     """Constructed once per process (not per rerun) — see module
-    docstring. TTS/Avatar tolerate missing API keys internally (they fall
-    back to edge-tts / the local Tier-3 clip respectively), but
-    `GeminiManager` — shared between the LLM and Imagen providers so both
-    draw from one key-rotation pool — raises if literally no Gemini key
-    is configured anywhere, which is fatal for this dashboard (fact
-    extraction/script generation have no fallback). That's caught here
-    and surfaced as a normal `st.error`, not an unhandled crash."""
+    docstring. TTS/Avatar/Visual all tolerate missing API keys internally
+    (they fall back to edge-tts / the local Tier-3 clip / a local
+    placeholder card respectively), but `GeminiManager` raises if
+    literally no Gemini key is configured anywhere, which is fatal for
+    this dashboard (fact extraction/script generation have no fallback).
+    That's caught here and surfaced as a normal `st.error`, not an
+    unhandled crash.
+
+    B-roll/avatar-source image generation is Hugging Face's free
+    Serverless Inference API (`HuggingFaceVisualProvider`), not Gemini
+    Imagen — Google requires a billing-enabled Cloud project for Imagen
+    access even on ostensibly free-tier API keys, confirmed live against
+    every Gemini key configured for this project (every call 404'd with
+    "not supported for predict"). See
+    providers/visual/huggingface_provider.py's module docstring."""
     try:
         gemini_manager = GeminiManager()
     except ValueError as exc:
@@ -143,7 +151,7 @@ def get_providers() -> Providers:
             llm=None,
             tts=SarvamTTSProvider(),
             avatar=AvatarFailoverProvider(),
-            imagen=None,
+            visual=HuggingFaceVisualProvider(),
             renderer=MoviePyVideoRenderer(),
             init_error=str(exc),
         )
@@ -152,7 +160,7 @@ def get_providers() -> Providers:
         llm=GeminiLLMProvider(gemini_manager),
         tts=SarvamTTSProvider(),
         avatar=AvatarFailoverProvider(),
-        imagen=GeminiImagenProvider(gemini_manager),
+        visual=HuggingFaceVisualProvider(),
         renderer=MoviePyVideoRenderer(),
         init_error=None,
     )
@@ -283,15 +291,14 @@ def generate_broll_prompts(manager: GeminiManager, narration_text: str, audience
 
 def get_avatar_source_image(providers: Providers) -> str:
     """The presenter portrait Hedra/D-ID animate for the hook clip.
-    Generated through the same GeminiImagenProvider as the B-roll — its
-    LocalCache means this only ever hits the network once across the
+    Generated through the same HuggingFaceVisualProvider as the B-roll —
+    its LocalCache means this only ever hits the network once across the
     dashboard's lifetime, not once per render."""
-    assert providers.imagen is not None
     placeholder_scene = Scene(
         storyboard_id="shared-avatar-source", order_index=0, scene_type=SceneType.IMAGE_MOTION,
         narration_segment_text="avatar source portrait", duration_seconds=1.0,
     )
-    asset = providers.imagen.generate_image(AVATAR_IMAGE_PROMPT, placeholder_scene, project_id=SHARED_ASSET_PROJECT_ID)
+    asset = providers.visual.generate_image(AVATAR_IMAGE_PROMPT, placeholder_scene, project_id=SHARED_ASSET_PROJECT_ID)
     return asset.storage_path  # type: ignore[return-value] - generate_image always sets storage_path on success
 
 
@@ -302,7 +309,7 @@ def run_render_pipeline(providers: Providers, project: Project, script: Script, 
     implementation exists yet). Raises on failure — the caller shows
     `st.error`; unlike the provider layer's own internal fallbacks, a
     broken final render has nothing further to degrade to."""
-    assert providers.llm is not None and providers.imagen is not None
+    assert providers.llm is not None
     storyboard_id = str(uuid.uuid4())
 
     status.write("🖼️ Preparing the presenter avatar image…")
@@ -341,7 +348,7 @@ def run_render_pipeline(providers: Providers, project: Project, script: Script, 
             storyboard_id=storyboard_id, order_index=i + 1, scene_type=SceneType.IMAGE_MOTION,
             narration_segment_text=prompt, duration_seconds=1.0, visual_prompt=prompt,
         )
-        image_asset = providers.imagen.generate_image(prompt, broll_scene, project_id=project.id)
+        image_asset = providers.visual.generate_image(prompt, broll_scene, project_id=project.id)
         broll_image_paths.append(image_asset.storage_path)  # type: ignore[arg-type]
 
     status.write("🎬 Stitching the final video (avatar hook + Ken Burns B-roll + captions)…")

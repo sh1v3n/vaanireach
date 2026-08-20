@@ -15,7 +15,7 @@ decision but a record of what was considered.
 | LLM (facts/scripts/translation/semantic verification) | Google Gemini (`gemini-3.6-flash`) | Horizontal key rotation across `GEMINI_API_KEYS` |
 | TTS | Sarvam AI → `edge-tts` | Horizontal rotation, then a hard local fallback |
 | Talking-avatar hook | Hedra → D-ID → static local clip | Horizontal rotation per vendor, then a 3rd local fallback tier |
-| B-roll images | Google Imagen 3 (`imagen-3.0-generate-002`) | Local cache → horizontal key rotation → local placeholder card |
+| B-roll images | Hugging Face Inference API (`stabilityai/stable-diffusion-3-medium-diffusers`) | Local cache → cold-start retry → local placeholder card |
 | Video composition | MoviePy v2 | N/A (local, no external API) |
 | Officer review UI | Streamlit (`dashboard/app.py`) | In-process, calls providers directly |
 
@@ -38,7 +38,10 @@ without touching `core/`, `agents/`, or `backend/`.
 - **FFmpeg-based motion graphics** — chosen for final composition (via
   MoviePy, which wraps ffmpeg) — see ADR-005.
 - **Image + voice → MP4** — the actual shape of the B-roll pipeline:
-  Imagen-generated stills + Ken Burns motion + TTS voiceover.
+  Hugging Face-generated stills + Ken Burns motion + TTS voiceover
+  (originally Imagen 3-generated — swapped once Imagen turned out to
+  require a billing-enabled Google Cloud project even on free-tier keys;
+  see ADR-004).
 - **Remotion** — considered, not chosen (Python-native MoviePy fit the
   rest of the stack better).
 - **LTX / Hedra / other AI video or avatar APIs** — Hedra chosen as Tier 1
@@ -49,8 +52,8 @@ without touching `core/`, `agents/`, or `backend/`.
 - **3D/avatar-based generation** — the avatar hook (`SceneType.AVATAR`)
   is implemented; true 3D scenes (`SceneType.THREE_D`) remain
   experimental/unimplemented.
-- **Hybrid** — what shipped: Gemini (text + images) + Sarvam/edge-tts
-  (audio) + Hedra/D-ID (avatar) + MoviePy (composition).
+- **Hybrid** — what shipped: Gemini (text) + Hugging Face (images) +
+  Sarvam/edge-tts (audio) + Hedra/D-ID (avatar) + MoviePy (composition).
 
 ## What this means for implementers
 
