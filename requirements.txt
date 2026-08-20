@@ -30,6 +30,7 @@ pillow>=10.0
 
 # --- Dashboard ---
 streamlit>=1.38
+pypdf>=6.0  # local_demo.py's PDF-upload text extraction
 
 # --- Config ---
 python-dotenv>=1.0
