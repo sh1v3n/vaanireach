@@ -16,7 +16,7 @@ sample_data/sample_scheme_notice.txt's facts.
 6. Transitions are assigned between scenes (every scene but the last has
    a non-null transition_to_next_scene; the last has none).
 7. NarrativeArc.story_summary is present and non-empty.
-8. Target duration is respected: 30-45s range, and equals the sum of the
+8. Target duration is respected: 20-30s range, and equals the sum of the
    scenes' (pre-TTS, estimated) durations.
 9. No duplicate narrative roles (HOOK/CONTEXT redundancy fix).
 10. No unsupported relative-temporal language (URGENCY/CTA fix).
@@ -224,6 +224,18 @@ def test_scene_count_is_not_hardcoded(arc_and_scenes):
     assert len(scenes) < 10
 
 
+def test_cta_and_closing_scenes_are_never_produced(arc_and_scenes):
+    """Regression guard: CTA and CLOSING are pure restatements of facts
+    already spoken earlier (CTA repeats HOW_TO's URL + DEADLINE's date;
+    CLOSING repeats ANNOUNCEMENT's scheme name + HOOK's org) — dropped
+    entirely so the video can fit a 20-30s target without losing any
+    fact. See docs/superpowers/specs/2026-08-20-video-captions-avatar-shortening-design.md."""
+    _, scenes, _ = arc_and_scenes
+    roles = {s.narrative_role for s in scenes}
+    assert NarrativeRole.CTA not in roles
+    assert NarrativeRole.CLOSING not in roles
+
+
 def test_narrative_arc_has_story_summary(arc_and_scenes):
     arc, _, _ = arc_and_scenes
     assert arc.story_summary.strip() != ""
@@ -231,8 +243,8 @@ def test_narrative_arc_has_story_summary(arc_and_scenes):
 
 def test_target_duration_respected(arc_and_scenes):
     arc, scenes, _ = arc_and_scenes
-    assert 30.0 <= arc.target_duration_seconds <= 45.0, (
-        f"target_duration_seconds={arc.target_duration_seconds} outside the 30-45s range"
+    assert 20.0 <= arc.target_duration_seconds <= 30.0, (
+        f"target_duration_seconds={arc.target_duration_seconds} outside the 20-30s range"
     )
     scene_sum = sum(s.duration_seconds for s in scenes)
     assert scene_sum == pytest.approx(arc.target_duration_seconds, abs=0.01)

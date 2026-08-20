@@ -42,8 +42,8 @@ from core.models.storyboard import Scene
 # "This scheme provides a subsidy of five thousand rupees." (10 words) -> 4.25s.
 WORDS_PER_SECOND = 2.3
 MIN_SCENE_DURATION_SECONDS = 1.5
-TARGET_DURATION_MIN_SECONDS = 30.0
-TARGET_DURATION_MAX_SECONDS = 45.0
+TARGET_DURATION_MIN_SECONDS = 20.0
+TARGET_DURATION_MAX_SECONDS = 30.0
 
 # Which narrative role a fact type's content serves — see the design
 # spec's FactType -> NarrativeRole table. CONTEXT facts (ORGANIZATION,
@@ -289,31 +289,10 @@ class TemplateStoryDirector(StoryDirector):
             joined = _join_values(deadline_facts)
             add_scene(NarrativeRole.URGENCY, deadline_facts, f"Note: the deadline is {joined}.")
 
-        # --- CTA: restates HOW_TO's preferred fact (URL if present) + DEADLINE.
-        # No relative-temporal language ("today", "now") — only the
-        # DEADLINE fact's own absolute date, per the fact-consistency rule.
-        how_to_facts = buckets.get(NarrativeRole.HOW_TO, [])
-        if how_to_facts or deadline_facts:
-            cta_facts = how_to_facts + deadline_facts
-            how_to_anchor = next((f for f in how_to_facts if f.fact_type == FactType.URL),
-                                  how_to_facts[0] if how_to_facts else None)
-            parts = ["Submit your application"]
-            if deadline_facts:
-                parts.append(f"before {_join_values(deadline_facts)}")
-            if how_to_anchor is not None:
-                parts.append(f"at {how_to_anchor.value}")
-            add_scene(NarrativeRole.CTA, cta_facts, " ".join(parts) + ".")
-
-        # --- CLOSING: restates ANNOUNCEMENT + CONTEXT, always present if either exists ---
+        # announcement_facts is kept (not folded into a CLOSING scene — see
+        # docs/superpowers/specs/2026-08-20-video-captions-avatar-shortening-design.md) because
+        # `title` below still needs it.
         announcement_facts = buckets.get(NarrativeRole.ANNOUNCEMENT, [])
-        closing_facts = announcement_facts + context_facts
-        if closing_facts:
-            summary_bits = []
-            if announcement_facts:
-                summary_bits.append(_join_values(announcement_facts))
-            if context_facts:
-                summary_bits.append(f"from {_join_values(context_facts)}")
-            add_scene(NarrativeRole.CLOSING, closing_facts, " — ".join(summary_bits) + ".")
 
         # --- transitions: every scene but the last points to a TransitionType ---
         for scene in scenes[:-1]:
