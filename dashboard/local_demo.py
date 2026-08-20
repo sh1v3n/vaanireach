@@ -26,6 +26,7 @@ logging.basicConfig(level=logging.INFO)
 
 from core.models.enums import LanguageCode  # noqa: E402
 from rendering.multilingual_video import run_full_pipeline  # noqa: E402
+from providers.documents.text_extraction import extract_text_from_upload_bytes  # noqa: E402
 
 st.set_page_config(page_title="VaaniReach — Local Demo", page_icon="🎬", layout="centered")
 
@@ -42,56 +43,23 @@ LANGUAGE_LABELS: dict[LanguageCode, str] = {
 }
 
 
-def _ocr_pdf_bytes(pdf_bytes: bytes) -> str:
-    """Real OCR fallback for scanned/image-only PDFs: renders each page
-    to an image (pdf2image, needs the system `poppler` — `pdftoppm`) then
-    runs Tesseract (pytesseract, needs the system `tesseract` binary) on
-    each page image. Slower than pypdf's text-layer read (real image
-    processing per page), only reached when that read finds nothing.
-
-    English-only by default (the base `tesseract` install ships English
-    OCR data only) — see requirements.txt for installing Hindi/other
-    Indic-script language data if you need to OCR non-English scans."""
-    import pytesseract
-    from pdf2image import convert_from_bytes
-
-    pages = convert_from_bytes(pdf_bytes)
-    page_texts = [pytesseract.image_to_string(page) for page in pages]
-    return "\n".join(page_texts)
-
-
 def extract_text_from_upload(uploaded_file) -> str:
-    """.txt is read directly. .pdf tries pypdf's embedded text layer
-    first (fast, no image processing) — if that finds nothing (a
-    scanned/image-only PDF with no real text layer), falls back to real
-    OCR (_ocr_pdf_bytes). Anything else is rejected with a clear error
-    rather than silently mis-decoding bytes as text."""
+    """Thin Streamlit wrapper around the shared extract_text_from_upload_bytes
+    — adds the st.info() progress message for the OCR path, which only
+    makes sense in a Streamlit UI."""
+    from pypdf import PdfReader
+    from io import BytesIO
+
     name = uploaded_file.name.lower()
-    if name.endswith(".txt"):
-        return uploaded_file.read().decode("utf-8", errors="replace")
+    file_bytes = uploaded_file.getvalue() if name.endswith(".pdf") else uploaded_file.read()
+
     if name.endswith(".pdf"):
-        from pypdf import PdfReader
-        from io import BytesIO
+        reader = PdfReader(BytesIO(file_bytes))
+        has_text_layer = any((page.extract_text() or "").strip() for page in reader.pages)
+        if not has_text_layer:
+            st.info(f"'{uploaded_file.name}' has no embedded text layer — running OCR (this takes a few seconds)…")
 
-        pdf_bytes = uploaded_file.getvalue()
-        reader = PdfReader(BytesIO(pdf_bytes))
-        pages_text = [page.extract_text() or "" for page in reader.pages]
-        text = "\n".join(pages_text)
-
-        if text.strip():
-            return text
-
-        st.info(f"'{uploaded_file.name}' has no embedded text layer — running OCR (this takes a few seconds)…")
-        ocr_text = _ocr_pdf_bytes(pdf_bytes)
-        if not ocr_text.strip():
-            raise ValueError(
-                f"'{uploaded_file.name}' ({len(reader.pages)} page(s)) has no embedded text AND OCR found "
-                "nothing readable either — the scan may be too low-quality, blank, or in a script the "
-                "installed Tesseract language data doesn't cover (English-only by default; see "
-                "requirements.txt for adding Hindi/other Indic scripts). Try pasting the text directly."
-            )
-        return ocr_text
-    raise ValueError(f"Unsupported file type: {uploaded_file.name} — upload a .txt or .pdf")
+    return extract_text_from_upload_bytes(uploaded_file.name, file_bytes)
 
 
 st.title("🎬 VaaniReach — Local Demo")
