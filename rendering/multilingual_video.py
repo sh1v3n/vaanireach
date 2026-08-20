@@ -21,22 +21,27 @@ from __future__ import annotations
 
 import logging
 import tempfile
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
 from core.interfaces.story_director import StoryDirector
 from core.interfaces.translation_provider import TranslationProvider
+from core.models.document import DocumentPage
 from core.models.enums import LanguageCode, VerificationStatus
 from core.models.fact import SourceFact
 from core.models.media import VideoAsset
 from core.models.storyboard import Scene
+from providers.llm.groq_provider import GroqLLMProvider
+from providers.narrative.template_story_director import TemplateStoryDirector
 from providers.tts.sarvam_tts_provider import SarvamTTSProvider
-from providers.translation.groq_translation_provider import translate_scenes
+from providers.translation.groq_translation_provider import GroqTranslationProvider, translate_scenes
 from providers.verification.deterministic_fact_verifier import DeterministicFactVerifier, claims_from_scenes
 from providers.video.avatar_portrait import get_avatar_source_image
 from providers.video.avatar_provider import AvatarFailoverProvider
 from providers.visual.cloudflare_provider import CloudflareVisualProvider
 from rendering.adapters.caption_burner import build_caption_track
+from rendering.adapters.cloudflare_scene_renderer import render_scene_images
 from rendering.adapters.ffmpeg_video_renderer import FfmpegVideoRenderer, build_multi_scene_captions, concat_audio_files
 
 logger = logging.getLogger("vaanireach.rendering.multilingual_video")
@@ -167,3 +172,62 @@ def generate_language_video(
         scenes=scenes, verified_count=verified_count, blocking_count=blocking_count,
         avatar_composited=avatar_composited, avatar_tier=avatar_tier,
     )
+
+
+def run_full_pipeline(
+    document_text: str,
+    *,
+    languages: list[LanguageCode],
+    project_id: str,
+    llm_provider: GroqLLMProvider | None = None,
+    story_director: StoryDirector | None = None,
+    translator: TranslationProvider | None = None,
+    visual_provider: CloudflareVisualProvider | None = None,
+    tts_provider: SarvamTTSProvider | None = None,
+    avatar_provider: AvatarFailoverProvider | None = None,
+) -> list[LanguageVideoResult]:
+    """The real "raw document text in, videos out" entry point —
+    replaces the hardcoded sample_notice_facts() fixture every test/demo
+    has used so far with genuine fact extraction (GroqLLMProvider.extract_facts,
+    ported from a teammate's branch — see
+    docs/superpowers/specs/2026-08-20-video-captions-avatar-shortening-design.md's
+    sibling work for why only extract_facts was taken and not that
+    branch's own rendering/avatar code). Everything downstream of
+    extraction (narrative planning, B-roll, translation, TTS, avatar,
+    captions, composition) is this pipeline's own existing, tested code,
+    unchanged.
+
+    B-roll images are rendered ONCE (shared across every language, per
+    generate_language_video's own language-independence principle) using
+    fact-aware prompts when possible (rendering/adapters/
+    cloudflare_scene_renderer.py's render_scene_images) — so a document
+    about a genuinely different topic gets visually appropriate B-roll,
+    not the static per-role templates' hardcoded farmer/agriculture
+    scenes. Falls back to those static templates automatically if the
+    fact-aware LLM call fails; this function never raises for that
+    reason, only for zero-facts-extracted (nothing to make a video from)."""
+    llm = llm_provider or GroqLLMProvider()
+    director = story_director or TemplateStoryDirector()
+    trans = translator or GroqTranslationProvider()
+    visual = visual_provider or CloudflareVisualProvider()
+
+    document_id = str(uuid.uuid4())
+    pages = [DocumentPage(document_id=document_id, page_number=1, raw_text=document_text)]
+    facts = llm.extract_facts(document_id, pages, project_id=project_id)
+    if not facts:
+        raise ValueError(
+            "run_full_pipeline: extract_facts returned zero facts — nothing to build a video from. "
+            "Check GROQ_API_KEY(S) and that document_text actually contains extractable scheme/policy content."
+        )
+
+    _, scenes = director.plan_narrative_arc(facts)
+    image_paths = render_scene_images(scenes, visual, project_id=project_id)
+
+    return [
+        generate_language_video(
+            facts, image_paths, story_director=director, translator=trans,
+            target_language=lang, project_id=project_id,
+            tts_provider=tts_provider, avatar_provider=avatar_provider, visual_provider=visual,
+        )
+        for lang in languages
+    ]

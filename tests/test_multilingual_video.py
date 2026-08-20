@@ -22,7 +22,7 @@ from core.models.enums import LanguageCode  # noqa: E402
 from providers.narrative.template_story_director import TemplateStoryDirector  # noqa: E402
 from providers.translation.groq_translation_provider import GroqTranslationProvider  # noqa: E402
 from rendering.adapters.pil_scene_renderer import PilSceneRenderer  # noqa: E402
-from rendering.multilingual_video import generate_language_video  # noqa: E402
+from rendering.multilingual_video import generate_language_video, run_full_pipeline  # noqa: E402
 from tests.test_narrative_story_director import sample_notice_facts  # noqa: E402
 
 _HAS_KEYS = bool(os.environ.get("GROQ_API_KEY")) and bool(os.environ.get("SARVAM_API_KEYS"))
@@ -228,3 +228,49 @@ def test_generate_language_video_falls_back_when_compositing_fails():
     assert result.avatar_tier is None
     assert result.video_asset.storage_path_mp4 is not None
     assert Path(result.video_asset.storage_path_mp4).exists()
+
+
+@pytest.mark.skipif(not _HAS_KEYS, reason="GROQ_API_KEY/SARVAM_API_KEYS not set")
+def test_run_full_pipeline_extracts_real_facts_from_raw_text_and_produces_a_video():
+    """The real "raw document text in, video out" path — extraction and
+    fact-aware image prompting are real (the two new capabilities this
+    test exists to cover); avatar/visual image generation are faked to
+    keep this test free/fast (both already have their own dedicated
+    coverage) without touching real D-ID credits or Cloudflare quota."""
+    document_text = (
+        "Kisan Sahayata Yojana (Farmer Support Scheme)\n"
+        "Office of the District Collectorate, Riverbend District\n\n"
+        "The District Collectorate is pleased to announce the Kisan Sahayata Yojana. "
+        "Eligible recipients will receive Rs 2,000. This scheme is open to farmers holding "
+        "less than 2 hectares of land in Riverbend District. To apply, visit "
+        "www.example-scheme.gov.in or register at your nearest Common Service Centre. "
+        "Applications close on 31 March 2026."
+    )
+    fake_avatar = _FakeAvatarProvider()
+    fake_visual = _FakeVisualProvider()
+
+    results = run_full_pipeline(
+        document_text, languages=[LanguageCode.EN], project_id="test-full-pipeline",
+        avatar_provider=fake_avatar, visual_provider=fake_visual,
+    )
+
+    assert len(results) == 1
+    result = results[0]
+    assert result.language == LanguageCode.EN
+    assert len(result.scenes) > 0
+    # real extraction found real facts, not an empty/placeholder ledger
+    assert result.verified_count > 0
+    assert result.video_asset.storage_path_mp4 is not None
+    assert Path(result.video_asset.storage_path_mp4).exists()
+
+
+def test_run_full_pipeline_raises_clearly_when_no_facts_are_extracted():
+    class _EmptyExtractor:
+        def extract_facts(self, document_id, pages, *, project_id):
+            return []
+
+    with pytest.raises(ValueError, match="zero facts"):
+        run_full_pipeline(
+            "irrelevant text", languages=[LanguageCode.EN], project_id="test-empty",
+            llm_provider=_EmptyExtractor(),
+        )
