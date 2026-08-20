@@ -22,9 +22,25 @@ assuming a name is still valid before changing DEFAULT_TEXT_MODEL.
 
 Same horizontal-key-rotation resilience shape as GeminiManager
 (providers/llm/gemini_client.py): itertools.cycle + a per-key cooldown on
-rate-limit/auth errors, short exponential backoff for transient
-(5xx/network) errors before rotating to the next key. Never raises the
-underlying HTTP exception to callers — only ever GroqAllKeysExhaustedError,
+auth errors, short exponential backoff for transient (5xx/network) errors
+before rotating to the next key.
+
+Rate limits (429) are handled differently from Gemini's, deliberately —
+this account's free tier caps at 8000 tokens/minute (TPM) per key, which
+a single large fact-extraction call (an 11-page real document ate ~5600
+of that budget in one request, confirmed live) can nearly exhaust by
+itself. Immediately "rotating" on a 429 is pointless with a single-key
+pool (the common case) since it just retries the same still-limited key
+with zero delay. Groq's own error message names the exact wait
+("...Please try again in 17.0s") — call() parses and honors that hint,
+actually sleeping before retrying the same key, rather than cooling down
+and rotating away from a key that will simply work again shortly.
+Confirmed live: this took a real fact-extraction call from failing twice
+in <1s to succeeding after one ~17.5s wait. (Also confirmed live: setting
+a large `max_tokens` to avoid output truncation does NOT help — it counts
+against the same TPM budget and gets rejected outright with 413 "Request
+too large" before the call even starts.) Never raises the underlying HTTP
+exception to callers — only ever GroqAllKeysExhaustedError,
 once every key in the pool has failed a full rotation.
 """
 from __future__ import annotations
@@ -52,6 +68,9 @@ BACKOFF_BASE_SECONDS = 1.0
 BACKOFF_MAX_SECONDS = 8.0
 MAX_RETRIES_PER_KEY = 2
 REQUEST_TIMEOUT_SECONDS = 60.0
+MAX_RATE_LIMIT_WAIT_SECONDS = 30.0  # cap on honoring a 429's own "try again in Ns" hint
+
+_RETRY_AFTER_RE = re.compile(r"try again in\s+([\d.]+)\s*s", re.IGNORECASE)
 
 # Same heuristic-substring-marker approach as gemini_client.py's
 # _classify_error, for the same reason: robust across the API's own
@@ -101,6 +120,20 @@ def _classify_error(status_code: int | None, text: str) -> str:
 
 def _mask(key: str) -> str:
     return f"...{key[-4:]}" if len(key) > 4 else "***"
+
+
+def _parse_retry_after_seconds(text: str) -> float | None:
+    """Extracts Groq's own suggested wait time from a 429 error message,
+    e.g. '...Please try again in 17.024999999s.'. Returns None if the
+    message doesn't contain the expected hint (caller falls back to
+    KEY_COOLDOWN_SECONDS)."""
+    match = _RETRY_AFTER_RE.search(text)
+    if not match:
+        return None
+    try:
+        return float(match.group(1))
+    except ValueError:
+        return None
 
 
 class GroqManager:
@@ -157,7 +190,35 @@ class GroqManager:
                 except _GroqHTTPError as exc:
                     last_exc = exc
                     kind = _classify_error(exc.status_code, str(exc))
-                    if kind in ("rate_limit", "auth_quota"):
+                    if kind == "rate_limit":
+                        # Groq's 429s are almost always a per-minute TOKEN
+                        # window (TPM), not a dead key — its error message
+                        # tells us exactly how long until that window
+                        # resets ("Please try again in 17.0s"). With only
+                        # one key configured (a real, common case — see
+                        # the module docstring), immediately cooling down
+                        # and "rotating" just retries the same still-
+                        # limited key with zero delay, which reliably
+                        # fails again. Wait out the actual hint (falling
+                        # back to KEY_COOLDOWN_SECONDS if the API didn't
+                        # give one) and retry the same key within its
+                        # budget instead — much closer to a real recovery.
+                        if retry < MAX_RETRIES_PER_KEY - 1:
+                            wait_s = _parse_retry_after_seconds(str(exc)) or KEY_COOLDOWN_SECONDS
+                            wait_s = min(wait_s, MAX_RATE_LIMIT_WAIT_SECONDS) + random.uniform(0, 0.5)
+                            logger.warning(
+                                "%s: key %s hit rate_limit (%s) — waiting %.1fs for the window to reset",
+                                op_name, _mask(key), exc, wait_s,
+                            )
+                            time.sleep(wait_s)
+                            continue
+                        self._cooldown_until[key] = time.monotonic() + KEY_COOLDOWN_SECONDS
+                        logger.warning(
+                            "%s: key %s still rate-limited after waiting — rotating to next key (%s)",
+                            op_name, _mask(key), exc,
+                        )
+                        break
+                    if kind == "auth_quota":
                         self._cooldown_until[key] = time.monotonic() + KEY_COOLDOWN_SECONDS
                         logger.warning(
                             "%s: key %s hit %s (%s) — rotating to next key",
