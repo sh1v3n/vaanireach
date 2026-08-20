@@ -95,8 +95,9 @@ class _FakeAvatarProvider:
     AvatarFailoverProvider itself uses) so downstream ffmpeg compositing
     gets a genuinely playable file."""
 
-    def __init__(self, *, should_fail: bool = False) -> None:
+    def __init__(self, *, should_fail: bool = False, tier: int = 1) -> None:
         self.should_fail = should_fail
+        self.tier = tier  # 1=Hedra, 2=D-ID, 3=Tier-3 static placeholder — mirrors AvatarFailoverProvider
         self.calls: list[tuple[str, str]] = []  # (image_path, audio_path)
 
     def generate_avatar_hook(self, image_path, audio_path, *, project_id, scene_id=None, text_prompt=""):
@@ -111,6 +112,7 @@ class _FakeAvatarProvider:
         return MediaAsset(
             project_id=project_id, asset_type=MediaAssetType.VIDEO_CLIP, storage_path=path,
             provider_name="fake-avatar", generation_status=GenerationStatus.COMPLETE,
+            metadata={"tier": self.tier},
         )
 
 
@@ -147,7 +149,7 @@ def test_generate_language_video_composites_avatar_and_captions_by_default():
     renderer = PilSceneRenderer()
     image_paths = [renderer.render_scene(s).storage_path for s in scenes]
 
-    fake_avatar = _FakeAvatarProvider()
+    fake_avatar = _FakeAvatarProvider(tier=1)
     fake_visual = _FakeVisualProvider()
 
     result = generate_language_video(
@@ -157,7 +159,35 @@ def test_generate_language_video_composites_avatar_and_captions_by_default():
         avatar_provider=fake_avatar, visual_provider=fake_visual,
     )
     assert result.avatar_composited is True
+    assert result.avatar_tier == 1
     assert len(fake_avatar.calls) == 1
+    assert result.video_asset.storage_path_mp4 is not None
+    assert Path(result.video_asset.storage_path_mp4).exists()
+
+
+@pytest.mark.skipif(not _HAS_KEYS, reason="GROQ_API_KEY/SARVAM_API_KEYS not set")
+def test_generate_language_video_reports_tier_3_placeholder_via_avatar_tier():
+    """Finding #1 (final whole-branch review): a Tier-3 static placeholder
+    (both real vendors exhausted) still composites successfully - the
+    caller must be able to tell it apart from a real Tier 1/2 avatar via
+    avatar_tier, not just avatar_composited."""
+    facts = sample_notice_facts()
+    director = TemplateStoryDirector()
+    _, scenes = director.plan_narrative_arc(facts)
+    renderer = PilSceneRenderer()
+    image_paths = [renderer.render_scene(s).storage_path for s in scenes]
+
+    fake_avatar = _FakeAvatarProvider(tier=3)
+    fake_visual = _FakeVisualProvider()
+
+    result = generate_language_video(
+        facts, image_paths,
+        story_director=director, translator=GroqTranslationProvider(),
+        target_language=LanguageCode.EN, project_id="test-avatar-tier3",
+        avatar_provider=fake_avatar, visual_provider=fake_visual,
+    )
+    assert result.avatar_composited is True
+    assert result.avatar_tier == 3
     assert result.video_asset.storage_path_mp4 is not None
     assert Path(result.video_asset.storage_path_mp4).exists()
 
@@ -183,5 +213,6 @@ def test_generate_language_video_falls_back_when_compositing_fails():
         avatar_provider=fake_avatar, visual_provider=fake_visual,
     )
     assert result.avatar_composited is False
+    assert result.avatar_tier is None
     assert result.video_asset.storage_path_mp4 is not None
     assert Path(result.video_asset.storage_path_mp4).exists()

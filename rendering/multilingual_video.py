@@ -61,6 +61,17 @@ class LanguageVideoResult:
     Global Constraints in docs/superpowers/plans/2026-08-20-video-captions-avatar-shortening.md:
     this is a reliability fallback, never an accepted steady state, and
     the caller (tests/demo_multilingual_video.py) reports it loudly."""
+    avatar_tier: int | None = None
+    """The `tier` from the generated avatar MediaAsset's metadata
+    (1=Hedra, 2=D-ID, 3=Tier-3 static local placeholder — see
+    providers/video/avatar_provider.py) when avatar_composited is True.
+    None when avatar_composited is False (the whole avatar+compositing
+    step failed, so no avatar asset exists). A Tier-3 result means
+    compositing itself succeeded but the "avatar" is a static dark
+    rectangle with no face/lip-sync — AvatarFailoverProvider never
+    raises even when both real vendors are exhausted, so callers must
+    check this field (not just avatar_composited) to know whether a run
+    produced a real talking avatar."""
 
 
 def generate_language_video(
@@ -115,6 +126,7 @@ def generate_language_video(
 
     video_asset = broll_video_asset
     avatar_composited = False
+    avatar_tier: int | None = None
     avatar = avatar_provider or AvatarFailoverProvider()
     visual = visual_provider or CloudflareVisualProvider()
     try:
@@ -127,6 +139,7 @@ def generate_language_video(
                 avatar_portrait_path, str(full_audio_path), project_id=project_id,
                 text_prompt=full_narration_text,
             )
+            avatar_tier = avatar_asset.metadata.get("tier")
             caption_track_path = build_caption_track(
                 scenes, language=target_language, width=BROLL_WIDTH, height=BROLL_HEIGHT, tmp_dir=tmp_path,
             )
@@ -140,6 +153,7 @@ def generate_language_video(
             )
             avatar_composited = True
     except Exception as exc:  # noqa: BLE001 - a compositing failure must degrade, never crash the run
+        avatar_tier = None
         logger.error(
             "generate_language_video: avatar+PiP+caption compositing failed for language=%s (%s) — "
             "falling back to the plain captioned-sidecar B-roll video. This is a reliability fallback, "
@@ -150,5 +164,5 @@ def generate_language_video(
     return LanguageVideoResult(
         language=target_language, video_asset=video_asset, srt_text=srt_text, vtt_text=vtt_text,
         scenes=scenes, verified_count=verified_count, blocking_count=blocking_count,
-        avatar_composited=avatar_composited,
+        avatar_composited=avatar_composited, avatar_tier=avatar_tier,
     )

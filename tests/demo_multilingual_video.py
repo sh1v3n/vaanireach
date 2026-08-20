@@ -75,20 +75,36 @@ def main(language_codes: list[str]) -> None:
         print(f"  duration: {probe['format']['duration']}s")
         print(f"  decode check: exit={decode.returncode} stderr={decode.stderr.strip() or '(none)'}")
         print(f"  verification: {result.verified_count}/{len(result.scenes)} verified, {result.blocking_count} blocking")
-        status_marker = "✅" if result.avatar_composited else "⚠️  DEGRADED (no avatar/captions)"
+        if not result.avatar_composited:
+            status_marker = "⚠️  DEGRADED (no avatar/captions)"
+        elif result.avatar_tier == 3:
+            status_marker = "⚠️  Tier 3 static placeholder — no real lip-sync"
+        else:
+            status_marker = "✅"
         print(f"  avatar+captions: {status_marker}")
         print(f"  first scene narration: {result.scenes[0].narration_segment_text}")
         print()
 
     print("=== SUMMARY ===")
     for r in results:
-        status = "avatar+captions OK" if r.avatar_composited else "DEGRADED - plain B-roll only, no avatar/captions"
+        if not r.avatar_composited:
+            status = "DEGRADED - plain B-roll only, no avatar/captions"
+        elif r.avatar_tier == 3:
+            status = "avatar+captions OK, but Tier 3 static placeholder - no real lip-sync"
+        else:
+            status = "avatar+captions OK"
         print(f"  {r.language.value}: {r.video_asset.storage_path_mp4}  ({r.verified_count}/{len(r.scenes)} verified)  [{status}]")
 
     degraded = [r.language.value for r in results if not r.avatar_composited]
     if degraded:
         print(f"\n⚠️  {len(degraded)} language(s) fell back to plain B-roll (no avatar/captions): {degraded}")
         print("    This is a reliability fallback triggering, not expected steady-state — investigate.")
+
+    tier3 = [r.language.value for r in results if r.avatar_composited and r.avatar_tier == 3]
+    if tier3:
+        print(f"\n⚠️  {len(tier3)} language(s) used the Tier 3 static placeholder (no real lip-sync): {tier3}")
+        print("    Both Hedra and D-ID were exhausted for these — see providers/video/hedra_client.py")
+        print("    and providers/video/did_client.py for the current known billing/account blockers.")
 
 
 if __name__ == "__main__":
