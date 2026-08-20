@@ -29,6 +29,16 @@ enough to never hit this cap; feeding it a full narration (this
 pipeline's design) routinely does. Every audio upload is transcoded to
 MP3 first regardless of length, so this doesn't quietly regress again
 for a slightly longer narration later.
+
+KNOWN ACCOUNT BLOCKER as of this investigation (2026-08-20): this
+account is on D-ID's `deid-trial` plan (visible in a talk's `GET
+/talks/{id}` response under `user.plan`). One configured key directly
+returned `402 not enough credits`; the other successfully created a
+talk that never left `status: "created"` (it never even started
+rendering) — likely a trial-plan processing-capacity limit rather than
+a defect in this client. Upgrading the plan or adding credits should
+unblock real generation instead of always falling through to the
+Tier-3 static fallback.
 """
 from __future__ import annotations
 
@@ -147,7 +157,14 @@ def _classify_error(exc: Exception) -> str:
     """Returns 'client_error', 'rate_limit', 'auth', 'transient',
     'generation_failure', or 'unknown'."""
     if isinstance(exc, _DIDHTTPError):
-        if exc.status_code in (400, 422):
+        if exc.status_code in (400, 402, 422):
+            # 402 ("not enough credits") added after direct reproduction
+            # against the real D-ID API (2026-08-20): D-ID's credit
+            # balance/plan limit is a property of the account, not of one
+            # key, so a credits failure on one key fails identically on
+            # every other key on the same account — same "raise
+            # immediately, don't burn through the pool" reasoning as a
+            # malformed request (mirrors hedra_client.py's 402 handling).
             return "client_error"
         if exc.status_code == 429:
             return "rate_limit"

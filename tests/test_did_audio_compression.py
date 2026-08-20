@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pytest  # noqa: E402
 
-from providers.video.did_client import _compress_audio_for_upload  # noqa: E402
+from providers.video.did_client import _compress_audio_for_upload, _classify_error, _DIDHTTPError  # noqa: E402
 
 
 def _make_wav(path: Path, *, duration: float) -> None:
@@ -67,3 +67,23 @@ def test_compress_audio_for_upload_preserves_duration(tmp_path):
 def test_compress_audio_for_upload_raises_clearly_on_a_nonexistent_input(tmp_path):
     with pytest.raises(RuntimeError, match="ffmpeg transcode failed"):
         _compress_audio_for_upload(str(tmp_path / "does_not_exist.wav"))
+
+
+def test_classify_error_treats_not_enough_credits_as_a_client_error():
+    """Regression guard for the real 402 'not enough credits' response
+    seen on a real run (final whole-branch review, finding #3): D-ID's
+    credit balance/plan limit is an account-level property, so a credits
+    failure on one key fails identically on every other key on the same
+    account — this must raise immediately (client_error), not burn
+    through the whole key pool re-uploading first. Mirrors
+    test_hedra_v3_client.py::test_classify_error_treats_insufficient_balance_as_a_client_error."""
+    exc = _DIDHTTPError(402, "not enough credits")
+    assert _classify_error(exc) == "client_error"
+
+
+def test_classify_error_still_treats_auth_and_rate_limit_correctly():
+    assert _classify_error(_DIDHTTPError(401, "unauthorized")) == "auth"
+    assert _classify_error(_DIDHTTPError(403, "forbidden")) == "auth"
+    assert _classify_error(_DIDHTTPError(429, "rate limited")) == "rate_limit"
+    assert _classify_error(_DIDHTTPError(400, "bad request")) == "client_error"
+    assert _classify_error(_DIDHTTPError(500, "server error")) == "transient"
