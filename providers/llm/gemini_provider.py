@@ -112,9 +112,20 @@ DOCUMENT:
 SCRIPT_GENERATION_PROMPT = """You are writing a {duration}-second spoken-narration video \
 script in {language} for an Indian government outreach video, aimed at: {audience}.
 
+Structure it as a short STORY, not a list of facts, following this arc:
+1. HOOK (the opening 1-2 sentences) — an attention-grabbing line that makes the viewer want to \
+keep watching: a relatable question, a striking number, or a direct address to the viewer. This \
+exact opening becomes the video's first 5 spoken seconds on screen, so it must stand alone and \
+immediately signal what this is about — never start with a dry "This notice concerns..." opener.
+2. CONTEXT — one or two sentences on why this matters to {audience}.
+3. THE KEY FACTS — the concrete, checkable details (amounts, dates, eligibility, how to apply), \
+woven naturally into the story rather than listed like a form.
+4. CALL TO ACTION — a short, clear closing line telling the viewer exactly what to do next.
+
 Ground every sentence ONLY in the facts below — never invent a date, amount, name, or \
 number that isn't listed. Aim for roughly {target_words} words (natural spoken pace). Write \
-warmly and conversationally, not like a legal notice.
+warmly and conversationally, like a trusted person telling you something useful — not like a \
+legal notice.
 
 SOURCE FACTS (id, type, criticality, value, raw text):
 {facts_block}
@@ -123,7 +134,8 @@ ORIGINAL DOCUMENT CONTEXT (for tone/context only — facts above are authoritati
 {source_context}
 
 Return ONLY a JSON object with exactly these keys:
-- "narration_text": the full narration script, in {language}, as one string
+- "narration_text": the full narration script, in {language}, as one string, following the \
+HOOK -> CONTEXT -> KEY FACTS -> CALL TO ACTION arc above
 - "claims": an array of every checkable statement the narration makes, each an object with:
   - "claim_text": the exact sentence/phrase from narration_text
   - "claim_type": a short free-form label, e.g. "amount", "deadline", "eligibility", "location"
@@ -136,7 +148,8 @@ No markdown fences, no commentary — the raw JSON object only.
 
 SCRIPT_REGENERATION_PROMPT = """Revise the {duration}-second {language} narration script \
 below for audience: {audience}. Verification found problems — fix ONLY what's listed, \
-keep everything else as close to the original as possible.
+keep everything else (including its HOOK -> CONTEXT -> KEY FACTS -> CALL TO ACTION story \
+structure and warm, conversational tone) as close to the original as possible.
 
 PREVIOUS NARRATION:
 {previous_narration}

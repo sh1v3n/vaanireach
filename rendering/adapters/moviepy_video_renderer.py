@@ -7,17 +7,22 @@ sarvam_tts_provider.py already depend on via `with_fps`/`with_audio`/
 automatically, so no system `ffmpeg` install is required — the same
 reasoning documented in avatar_provider.py's fallback-asset generator.
 
-The Assembly Sequence this implements (per docs/workflow.md's Video
-Composition stage):
-  1. Scene 1 (the hook) = the avatar clip from Phase 3
-     (providers/video/avatar_provider.py's `generate_avatar_hook`) — its
-     narration audio is already baked in, so it is used as-is.
-  2. Scene 2 (the B-roll) = the Gemini/Imagen images from Phase 4's
-     GeminiImagenProvider, each given a subtle Ken Burns zoom and a
-     duration of `body_audio.duration / len(images)`.
-  3. The B-roll sequence's audio track is the Phase 2 `body_audio.wav`.
+The Assembly Sequence this implements (a "news package" composite, not a
+hard cut between two scenes):
+  1. ONE continuous Ken Burns B-roll background runs for the entire
+     video, start to finish — an extra lead-in segment (reusing the
+     first B-roll image) covers the hook's duration, then the regular
+     per-image body segments continue seamlessly.
+  2. The avatar clip (Phase 3's `generate_avatar_hook`, narration audio
+     already baked in) is overlaid on top of that background as a large
+     bottom-anchored picture-in-picture, visible only for its own
+     (5-second hook) duration — "reporter over B-roll", not "reporter,
+     then cut to B-roll".
+  3. Audio is the avatar clip's own baked-in hook audio, followed by the
+     Phase 2 `body_audio.wav` — one continuous track matching the
+     background's full duration.
   4. An optional caption bar burns the translated script text in over
-     the B-roll.
+     the B-roll portion (after the avatar overlay ends).
 
 `compose_final_video()` is the primary, fully-typed entry point (explicit
 file paths in, one VideoAsset out) — exactly what a media agent or the
@@ -53,6 +58,12 @@ DEFAULT_FPS = 24
 
 KEN_BURNS_ZOOM_FRACTION = 0.12  # subtle: the image grows 12% over its full on-screen duration
 MIN_SCENE_DURATION_SECONDS = 0.5  # floor so a very short body_audio track can't produce a ~0s clip moviepy chokes on
+
+# News-anchor picture-in-picture: how much of the frame's width the
+# avatar overlay occupies, anchored to the bottom edge, centered
+# horizontally — large and prominent ("the avatar speaks in front"), not
+# a small corner box, while the B-roll keeps animating behind it.
+AVATAR_OVERLAY_WIDTH_FRACTION = 0.92
 
 CAPTION_BAR_HEIGHT = 180
 CAPTION_FONT_SIZE = 34
@@ -189,11 +200,14 @@ class MoviePyVideoRenderer(VideoRenderer):
         captions_text: str | None = None,
         output_name: str | None = None,
     ) -> VideoAsset:
-        """Scene 1 (avatar hook, audio already baked in) + Scene 2 (Ken
-        Burns B-roll, `body_audio_path` overlaid, each image's duration =
-        len(body_audio) / len(broll_image_paths)) -> one MP4. Raises
-        rather than degrading — unlike the provider layer, a broken final
-        render has no meaningful fallback to substitute."""
+        """One continuous Ken Burns B-roll background (a lead-in segment
+        covering the hook's duration, reusing the first B-roll image,
+        then the regular per-image body segments) with the avatar
+        overlaid as a bottom-anchored picture-in-picture for its own
+        duration — a news-package look, not a hard cut between an
+        avatar-only scene and a B-roll-only scene. Raises rather than
+        degrading — unlike the provider layer, a broken final render has
+        no meaningful fallback to substitute."""
         if not broll_image_paths:
             raise ValueError("compose_final_video: broll_image_paths is empty")
 
@@ -208,27 +222,47 @@ class MoviePyVideoRenderer(VideoRenderer):
         self._job_status[asset.id] = GenerationStatus.IN_PROGRESS
         out_path = self.output_dir / f"{output_name or asset.id}.mp4"
 
-        avatar_clip = broll_clips = broll_sequence = body_audio_clip = caption_clip = final = None
+        avatar_clip = avatar_overlay = background_clips = background = None
+        body_audio_clip = full_audio = caption_clip = final = None
         try:
-            from moviepy import AudioFileClip, CompositeVideoClip, VideoFileClip, concatenate_videoclips
+            from moviepy import AudioFileClip, CompositeVideoClip, VideoFileClip, concatenate_audioclips, concatenate_videoclips
 
             avatar_clip = VideoFileClip(avatar_video_path)
+            hook_duration = max(avatar_clip.duration, MIN_SCENE_DURATION_SECONDS)
             body_audio_clip = AudioFileClip(body_audio_path)
 
-            durations = _even_durations(body_audio_clip.duration, len(broll_image_paths))
-            broll_clips = [
+            # One continuous background: a hook-length lead-in (the first
+            # B-roll image, so the avatar overlay has something already
+            # animating behind it from t=0) followed by the regular
+            # per-image body segments.
+            hook_bg_clip = _apply_ken_burns(broll_image_paths[0], hook_duration, size=TARGET_SIZE)
+            body_durations = _even_durations(body_audio_clip.duration, len(broll_image_paths))
+            body_bg_clips = [
                 _apply_ken_burns(path, dur, size=TARGET_SIZE)
-                for path, dur in zip(broll_image_paths, durations)
+                for path, dur in zip(broll_image_paths, body_durations)
             ]
-            broll_sequence = concatenate_videoclips(broll_clips, method="compose").with_audio(body_audio_clip)
+            background_clips = [hook_bg_clip, *body_bg_clips]
+            background = concatenate_videoclips(background_clips, method="compose")
 
-            final = concatenate_videoclips([avatar_clip, broll_sequence], method="compose")
+            # One continuous audio track spanning the same timeline: the
+            # avatar clip's own baked-in hook narration, then the body
+            # narration track.
+            full_audio = concatenate_audioclips([avatar_clip.audio, body_audio_clip])
+            background = background.with_audio(full_audio)
+
+            # The avatar, large and bottom-anchored, overlaid on top of
+            # the background for exactly its own (hook) duration —
+            # "reporter over B-roll", like a news package.
+            overlay_width = int(TARGET_SIZE[0] * AVATAR_OVERLAY_WIDTH_FRACTION)
+            avatar_overlay = avatar_clip.without_audio().resized(width=overlay_width).with_position(("center", "bottom"))
+
+            final = CompositeVideoClip([background, avatar_overlay], size=TARGET_SIZE)
 
             if captions_text and captions_text.strip():
                 caption_clip = (
-                    _build_caption_clip(captions_text, width=TARGET_SIZE[0], duration=broll_sequence.duration)
+                    _build_caption_clip(captions_text, width=TARGET_SIZE[0], duration=background.duration - hook_duration)
                     .with_position(("center", "bottom"))
-                    .with_start(avatar_clip.duration)
+                    .with_start(hook_duration)
                 )
                 final = CompositeVideoClip([final, caption_clip], size=TARGET_SIZE)
 
@@ -251,7 +285,10 @@ class MoviePyVideoRenderer(VideoRenderer):
             asset.generation_status = GenerationStatus.FAILED
             raise
         finally:
-            _close_all(avatar_clip, *(broll_clips or []), broll_sequence, body_audio_clip, caption_clip, final)
+            _close_all(
+                avatar_clip, avatar_overlay, *(background_clips or []), background,
+                body_audio_clip, full_audio, caption_clip, final,
+            )
 
     # ---------------------------------------------------------------- VideoRenderer ABC
 

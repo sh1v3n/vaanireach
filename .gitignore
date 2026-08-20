@@ -32,6 +32,7 @@ sample_data/generated/
 *.wav
 *.mp3
 local_cache/
+avatar/*.flattened.jpg
 
 # --- Local manual test input/output (real documents, scratch results) ---
 /input/

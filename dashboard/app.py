@@ -31,6 +31,7 @@ from __future__ import annotations
 import logging
 import sys
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -87,19 +88,29 @@ DEFAULT_DURATION_SECONDS = 60
 BROLL_IMAGE_COUNT = 3
 HOOK_SCENE_DURATION_SECONDS = 5.0
 
-# A fixed, reused-across-projects presenter portrait. Generated once ever
-# (LocalCache is keyed on this exact prompt string — see
-# providers/visual/local_cache.py) rather than per notice, since the
-# avatar is a consistent "on-screen presenter", not scheme-specific
-# content.
-SHARED_ASSET_PROJECT_ID = "vaanireach-shared-assets"
-AVATAR_IMAGE_PROMPT = (
-    "A friendly, professional Indian government outreach spokesperson: warm, approachable "
-    "expression, looking directly at the camera, plain neutral studio background, upper-body "
-    "portrait, soft even lighting, photorealistic, no text or logos in frame"
-)
+# Ready-made presenter headshots (real, pre-shot photos) — used directly
+# as the Hedra/D-ID animation source instead of an AI-generated portrait.
+# Faster (no generation call at all) and gives a consistent, real-looking
+# on-screen presenter rather than a fresh AI face every time. These are
+# transparent-background PNGs (person cutouts, confirmed via their alpha
+# channel — not genuinely white as they first appear in a plain viewer,
+# which composites transparency onto white by default) — flattened onto
+# PRESENTER_BACKGROUND_RGB before use, since Hedra/D-ID need a fully
+# opaque source image and how each vendor would otherwise handle raw
+# alpha transparency is unpredictable.
+AVATAR_DIR = _ROOT_DIR / "avatar"
+PRESENTER_IMAGE_PATHS: dict[str, Path] = {
+    "Male": AVATAR_DIR / "avatar_male.png",
+    "Female": AVATAR_DIR / "avatar_female.png",
+}
+DEFAULT_PRESENTER = "Female"
+PRESENTER_BACKGROUND_RGB = (245, 245, 245)  # soft neutral studio white
 
-BROLL_PROMPT_TEMPLATE = """You are a visual director for a short Indian government outreach video. \
+BROLL_PROMPT_TEMPLATE = """You are a visual director for a short Indian government outreach video \
+told as a brief STORY, not a list of facts — the same {count} B-roll images should feel like one \
+coherent visual sequence (consistent setting/tone/time-of-day where plausible), each one advancing \
+the narration's story beat by beat, not just illustrating an isolated fact in isolation.
+
 Based on the narration below, propose exactly {count} distinct B-roll image prompts — vivid, \
 concrete, photographic scenes that visually support the narration's key points, suitable for a \
 short-form vertical video aimed at: {audience}. Do NOT depict any real named individual, \
@@ -108,8 +119,8 @@ politician, or logo, and do NOT put any text/writing inside the image.
 NARRATION:
 {narration_text}
 
-Return ONLY a JSON array of {count} strings, each one a self-contained image-generation prompt. \
-No markdown fences, no commentary.
+Return ONLY a JSON array of {count} strings, in the same order the story should unfold, each one a \
+self-contained image-generation prompt. No markdown fences, no commentary.
 """
 
 
@@ -309,38 +320,47 @@ def generate_broll_prompts(manager: GroqManager, narration_text: str, audience: 
     return prompts[:count]
 
 
-def get_avatar_source_image(providers: Providers) -> str:
-    """The presenter portrait Hedra/D-ID animate for the hook clip.
-    Generated through the same CloudflareFluxVisualProvider as the B-roll —
-    its LocalCache means this only ever hits the network once across the
-    dashboard's lifetime, not once per render."""
-    placeholder_scene = Scene(
-        storyboard_id="shared-avatar-source", order_index=0, scene_type=SceneType.IMAGE_MOTION,
-        narration_segment_text="avatar source portrait", duration_seconds=1.0,
-    )
-    asset = providers.visual.generate_image(AVATAR_IMAGE_PROMPT, placeholder_scene, project_id=SHARED_ASSET_PROJECT_ID)
-    return asset.storage_path  # type: ignore[return-value] - generate_image always sets storage_path on success
+def get_presenter_image_path(presenter: str) -> str:
+    """Ready-made headshot (a real, pre-shot photo) used directly as the
+    Hedra/D-ID animation source for the given presenter — no AI image
+    generation call at all, which is both strictly faster (one fewer
+    network round trip on the critical path) and gives a consistent,
+    real-looking on-screen presenter instead of a fresh AI-generated
+    face every render. Flattened onto a neutral background and cached as
+    a JPEG (see module docstring re: these being transparent PNGs) — the
+    flatten only ever runs once per photo, not once per render."""
+    src_path = PRESENTER_IMAGE_PATHS.get(presenter, PRESENTER_IMAGE_PATHS[DEFAULT_PRESENTER])
+    if not src_path.exists():
+        raise FileNotFoundError(
+            f"Presenter image not found at {src_path} — expected ready-made headshots under {AVATAR_DIR}/"
+        )
+
+    flattened_path = src_path.with_suffix(".flattened.jpg")
+    if flattened_path.exists():
+        return str(flattened_path)
+
+    from PIL import Image
+
+    source = Image.open(src_path).convert("RGBA")
+    background = Image.new("RGB", source.size, PRESENTER_BACKGROUND_RGB)
+    background.paste(source, mask=source.split()[3])
+    background.save(flattened_path, format="JPEG", quality=95)
+    return str(flattened_path)
 
 
-def run_render_pipeline(providers: Providers, project: Project, script: Script, audience: str, status) -> tuple:
-    """TTS -> hook/body slice -> avatar hook clip -> B-roll prompts ->
-    B-roll images -> MoviePy composite -> captions. Manually sequences
-    Phases 2-4 in-process per the Phase 5 brief (no `WorkflowEngine`
-    implementation exists yet). Raises on failure — the caller shows
-    `st.error`; unlike the provider layer's own internal fallbacks, a
-    broken final render has nothing further to degrade to."""
-    assert providers.llm is not None
-    storyboard_id = str(uuid.uuid4())
-
-    status.write("🖼️ Preparing the presenter avatar image…")
-    avatar_image_path = get_avatar_source_image(providers)
-
-    status.write("🗣️ Synthesizing narration audio…")
+def _produce_avatar_hook(
+    providers: Providers, avatar_image_path: str, script: Script, project: Project, storyboard_id: str,
+) -> tuple:
+    """TTS -> hook/body slice -> avatar hook clip. Runs entirely inside a
+    worker thread (see run_render_pipeline) in parallel with
+    _produce_broll(), since neither branch depends on the other's
+    output. Deliberately never calls `status.write()`/any `st.*`
+    function — Streamlit's UI calls are not safe to make off the main
+    script-run thread, so all progress messages are emitted by the
+    caller, only before/after the parallel section."""
     audio_asset = providers.tts.synthesize(
         script.narration_text, script.language, project_id=project.id, script_id=script.id,
     )
-
-    status.write("✂️ Slicing hook / body audio…")
     hook_audio_path, body_audio_path = providers.tts.process_and_slice_audio(audio_asset.storage_path)
     if body_audio_path is None:
         raise RuntimeError(
@@ -348,7 +368,6 @@ def run_render_pipeline(providers: Providers, project: Project, script: Script, 
             "increase the target duration in the sidebar and try again."
         )
 
-    status.write("🎭 Generating the talking-avatar hook clip…")
     hook_scene = Scene(
         storyboard_id=storyboard_id, order_index=0, scene_type=SceneType.AVATAR,
         narration_segment_text=script.narration_text[:300], duration_seconds=HOOK_SCENE_DURATION_SECONDS,
@@ -357,21 +376,57 @@ def run_render_pipeline(providers: Providers, project: Project, script: Script, 
         avatar_image_path, hook_audio_path, project_id=project.id, scene_id=hook_scene.id,
         text_prompt=script.narration_text[:300],
     )
+    return avatar_asset, body_audio_path
 
-    status.write("🎨 Drafting B-roll visual prompts…")
+
+def _produce_broll(providers: Providers, script: Script, audience: str, project: Project, storyboard_id: str) -> list[str]:
+    """B-roll prompt drafting -> every image generated concurrently
+    (each Cloudflare call is independent). Runs entirely inside a worker
+    thread in parallel with _produce_avatar_hook() — see that function's
+    docstring re: never touching Streamlit from here."""
+    assert providers.llm is not None
     broll_prompts = generate_broll_prompts(providers.llm.manager, script.narration_text, audience)
 
-    broll_image_paths: list[str] = []
-    for i, prompt in enumerate(broll_prompts):
-        status.write(f"🖌️ Generating B-roll image {i + 1}/{len(broll_prompts)}…")
+    def _one(indexed_prompt: tuple[int, str]) -> str:
+        i, prompt = indexed_prompt
         broll_scene = Scene(
             storyboard_id=storyboard_id, order_index=i + 1, scene_type=SceneType.IMAGE_MOTION,
             narration_segment_text=prompt, duration_seconds=1.0, visual_prompt=prompt,
         )
-        image_asset = providers.visual.generate_image(prompt, broll_scene, project_id=project.id)
-        broll_image_paths.append(image_asset.storage_path)  # type: ignore[arg-type]
+        asset = providers.visual.generate_image(prompt, broll_scene, project_id=project.id)
+        return asset.storage_path  # type: ignore[return-value]
 
-    status.write("🎬 Stitching the final video (avatar hook + Ken Burns B-roll + captions)…")
+    with ThreadPoolExecutor(max_workers=len(broll_prompts)) as pool:
+        return list(pool.map(_one, enumerate(broll_prompts)))
+
+
+def run_render_pipeline(
+    providers: Providers, project: Project, script: Script, audience: str, presenter: str, status,
+) -> tuple:
+    """Avatar hook (TTS -> slice -> Hedra/D-ID) and B-roll (prompt
+    drafting -> N concurrent Cloudflare calls) run in parallel — via
+    _produce_avatar_hook()/_produce_broll() — since neither branch
+    depends on the other's output; only MoviePy composition needs both
+    finished. Manually sequences Phases 2-4 in-process per the Phase 5
+    brief (no `WorkflowEngine` implementation exists yet). Raises on
+    failure — the caller shows `st.error`; unlike the provider layer's
+    own internal fallbacks, a broken final render has nothing further to
+    degrade to."""
+    assert providers.llm is not None
+    storyboard_id = str(uuid.uuid4())
+    avatar_image_path = get_presenter_image_path(presenter)
+
+    status.write("🎬 Generating the talking-avatar hook and B-roll visuals in parallel…")
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        avatar_future = executor.submit(
+            _produce_avatar_hook, providers, avatar_image_path, script, project, storyboard_id,
+        )
+        broll_future = executor.submit(_produce_broll, providers, script, audience, project, storyboard_id)
+
+        avatar_asset, body_audio_path = avatar_future.result()
+        broll_image_paths = broll_future.result()
+
+    status.write("🖼️ Stitching the final video (avatar hook + Ken Burns B-roll + captions)…")
     video_asset = providers.renderer.compose_final_video(
         avatar_asset.storage_path,  # type: ignore[arg-type]
         broll_image_paths,
@@ -508,7 +563,11 @@ def render_step2(providers: Providers) -> None:
 
     st.header("Step 2 — Approve & Render")
     langs = list(scripts.keys())
-    lang = st.selectbox("Language to render", langs, format_func=lambda l: LANGUAGE_LABELS[l], key="render_language")
+    col_lang, col_presenter = st.columns(2)
+    with col_lang:
+        lang = st.selectbox("Language to render", langs, format_func=lambda l: LANGUAGE_LABELS[l], key="render_language")
+    with col_presenter:
+        presenter = st.selectbox("Presenter", list(PRESENTER_IMAGE_PATHS), key="render_presenter")
 
     results = st.session_state.verification.get(lang, [])
     blocking = [r for r in results if r.is_blocking]
@@ -532,7 +591,7 @@ def render_step2(providers: Providers) -> None:
     try:
         with st.status(f"Rendering the {LANGUAGE_LABELS[lang]} video…", expanded=True) as status:
             video_asset, captions_srt = run_render_pipeline(
-                providers, st.session_state.project, script, DEFAULT_AUDIENCE, status,
+                providers, st.session_state.project, script, DEFAULT_AUDIENCE, presenter, status,
             )
             status.update(label="Render complete.", state="complete")
         st.session_state.rendered[lang] = {"video": video_asset, "captions_srt": captions_srt}

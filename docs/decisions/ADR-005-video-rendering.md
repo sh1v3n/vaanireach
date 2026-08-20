@@ -27,17 +27,24 @@ class VideoRenderer(ABC):
     def get_status(self, job_id: str) -> GenerationStatus: ...
 ```
 
-What `MoviePyVideoRenderer` actually does:
-- **`compose_final_video()`** (the primary, explicit entry point): the
-  Phase 3 avatar hook clip (narration audio already baked in) → N B-roll
-  images, each given a subtle Ken Burns zoom
-  (`clip.resized(lambda t: ...)` composited onto a fixed-size canvas) and
-  a duration of `body_audio.duration / image_count` → the Phase 2 body
-  audio track overlaid on the B-roll → an optional Pillow-drawn caption
-  bar burned in over the B-roll (deliberately not MoviePy's `TextClip`,
-  which needs either ImageMagick or a resolvable font file as an
-  unverified system prerequisite) → `write_videofile(codec="libx264",
-  audio_codec="aac", preset="ultrafast")`.
+What `MoviePyVideoRenderer` actually does — a "news package" composite,
+revised 2026-08-20 from an earlier hard cut between an avatar-only scene
+and a B-roll-only scene:
+- **`compose_final_video()`** (the primary, explicit entry point): ONE
+  continuous Ken Burns B-roll background runs the entire video (a
+  lead-in segment reusing the first B-roll image covers the avatar
+  clip's own duration, then N per-image segments of
+  `body_audio.duration / image_count` each) → the avatar clip (Phase 3,
+  narration audio already baked in) is overlaid on top as a large,
+  bottom-anchored picture-in-picture for exactly its own duration —
+  "reporter over B-roll", like a news broadcast, not "reporter, then cut
+  to B-roll" → one continuous audio track (the avatar clip's baked-in
+  hook audio, then the Phase 2 body audio) → an optional Pillow-drawn
+  caption bar burned in over the B-roll portion, after the avatar
+  overlay ends (deliberately not MoviePy's `TextClip`, which needs
+  either ImageMagick or a resolvable font file as an unverified system
+  prerequisite) → `write_videofile(codec="libx264", audio_codec="aac",
+  preset="ultrafast")`.
 - **`render()`** (the ABC method): derives those same inputs from the
   generic `scenes`/`audio_assets`/`visual_assets` lists (one
   `SceneType.AVATAR` scene = the hook, everything else ordered by

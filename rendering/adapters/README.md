@@ -7,11 +7,15 @@ MoviePy v2, backed by the imageio-ffmpeg binary MoviePy installs
 automatically, so no system `ffmpeg` install is required.
 
 Implements the Assembly Sequence from `docs/workflow.md`'s Video
-Composition stage: the Phase 3 avatar hook clip (audio already baked in)
-as Scene 1, followed by the Phase 4 Gemini/Imagen B-roll images — each
-given a subtle Ken Burns zoom and a duration of
-`body_audio.duration / image_count` — with the Phase 2 `body_audio.wav`
-overlaid, and an optional burned-in caption bar over the B-roll.
+Composition stage as a "news package" composite: ONE continuous Ken
+Burns B-roll background (each image given a subtle zoom, with a lead-in
+segment reusing the first image for the avatar's own duration) runs the
+whole video, with the Phase 3 avatar hook clip (audio already baked in)
+overlaid on top as a large, bottom-anchored picture-in-picture for
+exactly its own duration — "reporter over B-roll", not a hard cut
+between an avatar scene and a B-roll scene. The Phase 2 `body_audio.wav`
+plays under the B-roll portion, and an optional burned-in caption bar
+covers the B-roll after the avatar overlay ends.
 
 `compose_final_video()` is the primary entry point (explicit file paths
 in, one `VideoAsset` out); `render()` implements the generic
