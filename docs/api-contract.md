@@ -1,10 +1,15 @@
 # VaaniReach — API Contract
 
-> Phase 0: every endpoint below except `GET /health` returns **HTTP 501**
-> with a `NotImplementedResponse` body (`{"detail", "stage", "project_id"}`).
-> Request/response models are declared using the real `core/models`
-> Pydantic domain models directly, so the contract is stable and
-> implementation-independent — see [`backend/app/routes/`](../backend/app/routes/).
+> Still Phase 0: every endpoint below except `GET /health` returns **HTTP
+> 501** with a `NotImplementedResponse` body (`{"detail", "stage",
+> "project_id"}`). Request/response models are declared using the real
+> `core/models` Pydantic domain models directly, so the contract is stable
+> and implementation-independent — see
+> [`backend/app/routes/`](../backend/app/routes/). **The pipeline that
+> actually runs today (Phases 1-5) does not go through this API at all** —
+> [`dashboard/app.py`](../dashboard/app.py) calls the provider layer
+> in-process. This contract remains the target shape for a future HTTP
+> front-end, not a description of anything callable right now.
 
 | Method | Path | Request Model | Response Model | Stub `stage` |
 |---|---|---|---|---|
