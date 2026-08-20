@@ -14,13 +14,13 @@ app over HTTP — the two are independent front-ends over the same `core`/
 
 ```bash
 pip install -r requirements.txt
-cp .env.example .env   # fill in GEMINI_API_KEYS at minimum; SARVAM/HEDRA/DID_API_KEYS are optional (all have local fallbacks)
+cp .env.example .env   # fill in GROQ_API_KEYS at minimum; SARVAM/HEDRA/DID_API_KEYS/CLOUDFLARE_* are optional (all have local fallbacks)
 streamlit run dashboard/app.py
 ```
 
-`GEMINI_API_KEYS` is the one hard requirement — fact extraction and
-script generation have no fallback provider. Everything else (TTS,
-avatar, B-roll images) degrades to a local/offline fallback per
-`docs/decisions/ADR-004/005/006.md` and the Phase 2-4 provider
-docstrings, so the dashboard stays usable even with zero other keys
-configured.
+`GROQ_API_KEYS` is the one hard requirement — fact extraction and script
+generation have no fallback provider (get a free key at
+console.groq.com). Everything else (TTS, avatar, B-roll images) degrades
+to a local/offline fallback per `docs/decisions/ADR-004/005/006.md` and
+the Phase 2-4 provider docstrings, so the dashboard stays usable even
+with zero other keys configured.

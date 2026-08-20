@@ -108,7 +108,7 @@ decisions).
 | Officer dashboard | Streamlit (`dashboard/app.py`) | The actual working front-end — in-process, no HTTP hop |
 | Frontend (`frontend/`) | Next.js (TypeScript, App Router) | Scaffolded for a future web dashboard; **not the one that runs today** |
 | Persistence | None yet | Everything lives in `st.session_state` for the dashboard session; SQLite/SQLModel remain unimplemented |
-| LLM | Google Gemini (`gemini-3.6-flash`) | See [Media Generation](#media-generation) |
+| LLM | Groq (`openai/gpt-oss-120b`) | See [Media Generation](#media-generation) |
 | B-roll images | Cloudflare Workers AI (flux-1-schnell) | See [Media Generation](#media-generation) |
 | TTS | Sarvam AI → `edge-tts` fallback | See [Media Generation](#media-generation) |
 | Avatar / video composition | Hedra → D-ID → local fallback; MoviePy v2 | See [Media Generation](#media-generation) |
@@ -127,7 +127,7 @@ Originally left open — see
 
 | Concern | Provider(s) | Resilience shape |
 |---|---|---|
-| LLM (facts / scripts / translation / semantic verification) | Google Gemini | Horizontal API-key rotation |
+| LLM (facts / scripts / translation / semantic verification) | Groq (`openai/gpt-oss-120b`) | Horizontal API-key rotation |
 | TTS | Sarvam AI → `edge-tts` | Horizontal rotation, then a free local fallback |
 | Talking-avatar hook | Hedra → D-ID → static local clip | 2 vendors, then a locally-generated placeholder |
 | B-roll images | Cloudflare Workers AI (`@cf/black-forest-labs/flux-1-schnell`) | Content-addressed local cache → horizontal token rotation → local placeholder card |
@@ -145,6 +145,14 @@ too; Pollinations.ai's free public queue worked but wasn't chosen as the
 long-term answer. `GeminiImagenProvider`, `HuggingFaceVisualProvider`,
 and `PollinationsVisualProvider` are all kept in the codebase, just no
 longer wired in — see ADR-004's revision notes.
+
+The LLM backend was originally Gemini too, moved to Groq for the same
+kind of reason but a different failure mode: not a billing wall, a quota
+wall — Gemini's free-tier daily cap (20 requests/day/key/model) was
+repeatedly exhausted across all 3 configured keys during live testing,
+each time blocking fact extraction with no fallback. `GeminiLLMProvider`
+is kept in the codebase, just no longer wired in — see ADR-006's
+revision note.
 
 Every fallback tier exists so the dashboard degrades to *something free
 and local* instead of crashing when a vendor key is missing, rate-limited,
@@ -219,14 +227,15 @@ No Docker required — everything runs natively.
 python3 -m venv .venv
 source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-cp .env.example .env             # fill in GEMINI_API_KEYS at minimum — see dashboard/README.md
+cp .env.example .env             # fill in GROQ_API_KEYS at minimum — see dashboard/README.md
 streamlit run dashboard/app.py
 ```
 
-`GEMINI_API_KEYS` is the one hard requirement (fact extraction/script
-generation have no fallback). `SARVAM_API_KEYS`/`HEDRA_API_KEYS`/
-`DID_API_KEYS` are all optional — every one of those providers degrades
-to a free local fallback if unset. See [`dashboard/README.md`](dashboard/README.md).
+`GROQ_API_KEYS` is the one hard requirement (fact extraction/script
+generation have no fallback; get a free key at console.groq.com).
+`SARVAM_API_KEYS`/`HEDRA_API_KEYS`/`DID_API_KEYS`/`CLOUDFLARE_*` are all
+optional — every one of those providers degrades to a free local
+fallback if unset. See [`dashboard/README.md`](dashboard/README.md).
 
 ### Backend
 

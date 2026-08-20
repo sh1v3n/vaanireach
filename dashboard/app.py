@@ -36,7 +36,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-# Must happen before any provider is constructed — GeminiManager,
+# Must happen before any provider is constructed — GroqManager,
 # SarvamTTSManager, HedraAvatarManager, and DIDAvatarManager all read
 # their API keys from os.environ at __init__ time.
 load_dotenv()
@@ -65,8 +65,8 @@ from core.models import (  # noqa: E402
     SceneType,
     VerificationStatus,
 )
-from providers.llm.gemini_client import GeminiAllKeysExhaustedError, GeminiManager  # noqa: E402
-from providers.llm.gemini_provider import GeminiLLMProvider  # noqa: E402
+from providers.llm.groq_client import GroqAllKeysExhaustedError, GroqManager  # noqa: E402
+from providers.llm.groq_provider import GroqLLMProvider  # noqa: E402
 from providers.tts.sarvam_tts_provider import SarvamTTSProvider  # noqa: E402
 from providers.video.avatar_provider import AvatarFailoverProvider  # noqa: E402
 from providers.visual.cloudflare_flux_provider import CloudflareFluxVisualProvider  # noqa: E402
@@ -117,7 +117,7 @@ No markdown fences, no commentary.
 
 @dataclass
 class Providers:
-    llm: GeminiLLMProvider | None
+    llm: GroqLLMProvider | None
     tts: SarvamTTSProvider
     avatar: AvatarFailoverProvider
     visual: CloudflareFluxVisualProvider
@@ -130,11 +130,25 @@ def get_providers() -> Providers:
     """Constructed once per process (not per rerun) — see module
     docstring. TTS/Avatar/Visual all tolerate missing/unavailable
     providers internally (they fall back to edge-tts / the local Tier-3
-    clip / a local placeholder card respectively), but `GeminiManager`
-    raises if literally no Gemini key is configured anywhere, which is
+    clip / a local placeholder card respectively), but `GroqManager`
+    raises if literally no Groq key is configured anywhere, which is
     fatal for this dashboard (fact extraction/script generation have no
     fallback). That's caught here and surfaced as a normal `st.error`,
     not an unhandled crash.
+
+    The LLM backend (fact extraction, script generation, translation,
+    semantic verification) is Groq (`GroqLLMProvider`,
+    `openai/gpt-oss-120b`) — not Gemini. Gemini's free-tier daily quota
+    (20 requests/day/key/model) proved far too tight for this pipeline's
+    real usage: all 3 configured Gemini keys were repeatedly exhausted
+    during live testing, blocking fact extraction entirely with no
+    fallback. Groq's free tier is dramatically more generous (confirmed
+    live: 1000 requests / 8000 tokens per short window) and its
+    LPU-based inference is consistently sub-second. `GeminiLLMProvider`
+    (providers/llm/gemini_provider.py) is kept in the codebase — correct,
+    working — but no longer wired in. See
+    providers/llm/groq_client.py's module docstring for the full
+    rationale and model-choice verification.
 
     B-roll/avatar-source image generation is Cloudflare Workers AI's
     `@cf/black-forest-labs/flux-1-schnell` (`CloudflareFluxVisualProvider`)
@@ -150,9 +164,9 @@ def get_providers() -> Providers:
     fine for a demo but wasn't the permanent answer. See
     providers/visual/cloudflare_flux_provider.py's module docstring."""
     try:
-        gemini_manager = GeminiManager()
+        groq_manager = GroqManager()
     except ValueError as exc:
-        logger.error("get_providers: Gemini is not configured: %s", exc)
+        logger.error("get_providers: Groq is not configured: %s", exc)
         return Providers(
             llm=None,
             tts=SarvamTTSProvider(),
@@ -163,7 +177,7 @@ def get_providers() -> Providers:
         )
 
     return Providers(
-        llm=GeminiLLMProvider(gemini_manager),
+        llm=GroqLLMProvider(groq_manager),
         tts=SarvamTTSProvider(),
         avatar=AvatarFailoverProvider(),
         visual=CloudflareFluxVisualProvider(),
@@ -280,14 +294,14 @@ def regenerate_language(providers: Providers, lang: LanguageCode) -> None:
 
 # --------------------------------------------------------------------------- Step 2: render pipeline
 
-def generate_broll_prompts(manager: GeminiManager, narration_text: str, audience: str, *, count: int = BROLL_IMAGE_COUNT) -> list[str]:
+def generate_broll_prompts(manager: GroqManager, narration_text: str, audience: str, *, count: int = BROLL_IMAGE_COUNT) -> list[str]:
     prompt = BROLL_PROMPT_TEMPLATE.format(count=count, narration_text=narration_text[:3000], audience=audience)
     prompts: list[str] = []
     try:
         raw = manager.generate_json(prompt, temperature=0.6)
         if isinstance(raw, list):
             prompts = [str(p).strip() for p in raw if str(p).strip()]
-    except (GeminiAllKeysExhaustedError, ValueError) as exc:
+    except (GroqAllKeysExhaustedError, ValueError) as exc:
         logger.warning("generate_broll_prompts: falling back to a generic prompt per slot (%s)", exc)
 
     while len(prompts) < count:
@@ -388,7 +402,7 @@ def render_sidebar(providers: Providers) -> dict | None:
         st.caption("Officer Review Dashboard")
 
         if providers.init_error:
-            st.error(f"⚠️ Gemini is not configured: {providers.init_error}")
+            st.error(f"⚠️ Groq is not configured: {providers.init_error}")
 
         with st.form("ingestion_form"):
             text = st.text_area(
@@ -410,7 +424,7 @@ def render_sidebar(providers: Providers) -> dict | None:
             st.error("Paste or upload some notice text first.")
             return None
         if providers.llm is None:
-            st.error("Gemini is not configured — set GEMINI_API_KEYS in .env and restart.")
+            st.error("Groq is not configured — set GROQ_API_KEYS in .env and restart.")
             return None
 
         return {"notice_text": notice_text, "audience": audience.strip() or DEFAULT_AUDIENCE, "duration": duration}
@@ -570,8 +584,8 @@ def main() -> None:
     if request is not None:
         try:
             run_extraction_and_drafting(providers, request["notice_text"], request["audience"], request["duration"])
-        except GeminiAllKeysExhaustedError as exc:
-            st.error(f"Gemini API key pool exhausted: {exc}")
+        except GroqAllKeysExhaustedError as exc:
+            st.error(f"Groq API key pool exhausted: {exc}")
         except Exception as exc:  # noqa: BLE001 - catastrophic pipeline failure, shown to the officer per the brief
             logger.exception("run_extraction_and_drafting failed")
             st.error(f"Extraction failed: {exc}")

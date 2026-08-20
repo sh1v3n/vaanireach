@@ -12,7 +12,7 @@ decision but a record of what was considered.
 
 | Concern | Provider(s) | Resilience shape |
 |---|---|---|
-| LLM (facts/scripts/translation/semantic verification) | Google Gemini (`gemini-3.6-flash`) | Horizontal key rotation across `GEMINI_API_KEYS` |
+| LLM (facts/scripts/translation/semantic verification) | Groq (`openai/gpt-oss-120b`) | Horizontal key rotation across `GROQ_API_KEYS` |
 | TTS | Sarvam AI → `edge-tts` | Horizontal rotation, then a hard local fallback |
 | Talking-avatar hook | Hedra → D-ID → static local clip | Horizontal rotation per vendor, then a 3rd local fallback tier |
 | B-roll images | Cloudflare Workers AI (`@cf/black-forest-labs/flux-1-schnell`) | Local cache → horizontal token rotation → local placeholder card |
@@ -55,7 +55,7 @@ without touching `core/`, `agents/`, or `backend/`.
 - **3D/avatar-based generation** — the avatar hook (`SceneType.AVATAR`)
   is implemented; true 3D scenes (`SceneType.THREE_D`) remain
   experimental/unimplemented.
-- **Hybrid** — what shipped: Gemini (text) + Cloudflare Workers AI
+- **Hybrid** — what shipped: Groq (text) + Cloudflare Workers AI
   (images) + Sarvam/edge-tts (audio) + Hedra/D-ID (avatar) + MoviePy
   (composition).
 
