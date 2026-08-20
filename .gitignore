@@ -45,3 +45,6 @@ local_cache/
 .DS_Store
 .vscode/
 .idea/
+
+# --- Subagent-driven-development scratch workspace ---
+.superpowers/
