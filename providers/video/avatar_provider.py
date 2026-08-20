@@ -121,7 +121,21 @@ class AvatarFailoverProvider(VideoGenerationProvider):
         at a local MP4 — Hedra- or D-ID-generated on success, or the
         Tier 3 static placeholder if both vendor pools are exhausted.
         Never raises: a working video (even a placeholder one) is always
-        returned so the Streamlit demo never crashes on this step."""
+        returned so the Streamlit demo never crashes on this step.
+
+        Worst-case wall-clock, undocumented elsewhere in the call chain
+        (final whole-branch review, finding #5): each vendor tier retries
+        every key in its pool, and each key's attempt can run all the way
+        to that vendor's POLL_TIMEOUT_SECONDS (currently 300s) before
+        being counted as failed and moving on — there is no shared/
+        aggregate deadline across the cascade. So the theoretical worst
+        case before falling through to Tier 3 is
+        (num_hedra_keys x HEDRA POLL_TIMEOUT_SECONDS) +
+        (num_did_keys x DID POLL_TIMEOUT_SECONDS)
+        — e.g. 2 keys per vendor x 300s x 2 vendor tiers = 1200s (20
+        minutes) per language. This is a known, accepted tradeoff for
+        this fix wave (not something to redesign here) — a future reader
+        adding an aggregate deadline should account for this shape."""
         VIDEO_DIR.mkdir(parents=True, exist_ok=True)
 
         video_bytes: bytes | None = None

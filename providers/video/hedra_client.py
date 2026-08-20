@@ -52,6 +52,14 @@ https://api.hedra.com/v3/openapi.json). This client targets v3:
 
 Error envelope also changed for v3: `{"error": {"code", "message",
 "retryable", ...}}` (was `{"code", "error_code", "messages": [...]}`).
+
+KNOWN ACCOUNT BLOCKER as of this investigation (2026-08-20): this
+account's API wallet balance was confirmed live at $0.00 (`GET
+/v3/balance`), which is why every real run currently exhausts Hedra
+via the 402 INSUFFICIENT_BALANCE client_error path below and falls
+through to D-ID/Tier-3. Fund the account at
+https://www.hedra.com/develop/billing?add_funds=true to get real
+generations instead of always hitting the Tier-3 static fallback.
 """
 from __future__ import annotations
 
