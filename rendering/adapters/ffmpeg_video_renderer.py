@@ -26,12 +26,13 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from core.models.enums import GenerationStatus, TransitionType
+from core.models.enums import GenerationStatus, LanguageCode, TransitionType
 from core.models.media import AudioAsset, MediaAsset
 from core.models.script import Script
 from core.models.storyboard import Scene
 from core.models.translation import Translation
 from core.models.media import VideoAsset
+from rendering.adapters.caption_burner import CAPTION_BAR_HEIGHT
 from rendering.interfaces.video_renderer import VideoRenderer
 
 logger = logging.getLogger("vaanireach.rendering.ffmpeg_video_renderer")
@@ -39,6 +40,8 @@ logger = logging.getLogger("vaanireach.rendering.ffmpeg_video_renderer")
 VIDEO_OUTPUT_DIR = Path(os.environ.get("RENDERED_VIDEO_OUTPUT_DIR", "./data/video/final"))
 
 FRAME_RATE = 25
+PIP_WIDTH = 200
+PIP_MARGIN = 16
 
 # Maps our TransitionType straight onto ffmpeg's built-in xfade
 # transition names — no bespoke transition code, just the standard
@@ -373,6 +376,67 @@ class FfmpegVideoRenderer(VideoRenderer):
             capture_output=True, text=True, timeout=15,
         )
         return float(result.stdout.strip())
+
+    # ---------------------------------------------------------------- avatar PiP + caption burn-in
+
+    def compose_pip_and_captions(
+        self,
+        *,
+        broll_video_path: str,
+        avatar_clip_path: str,
+        caption_track_path: str,
+        duration_seconds: float,
+        project_id: str,
+        storyboard_id: str,
+        language: LanguageCode,
+    ) -> VideoAsset:
+        """Composites an existing B-roll+audio video (compose_multi_scene's
+        own output) with a looping avatar PiP box (bottom-left, above the
+        caption bar) and a burned-in caption track (rendering/adapters/
+        caption_burner.py), in one ffmpeg pass. `-stream_loop -1` on the
+        avatar input means a clip shorter than `duration_seconds` (e.g.
+        the Tier-3 static fallback) loops seamlessly to cover the whole
+        video rather than leaving a blank corner; a real Hedra/D-ID clip
+        (audio-driven, already matching `duration_seconds`) effectively
+        never repeats. `-t duration_seconds` caps the final output so
+        neither a looped avatar nor a slightly-longer (frame-quantized)
+        caption track can extend it."""
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+
+        video_asset = VideoAsset(
+            project_id=project_id, storyboard_id=storyboard_id, language=language,
+            generation_status=GenerationStatus.IN_PROGRESS,
+        )
+        out_path = self.output_dir / f"{video_asset.id}.mp4"
+
+        filter_complex = (
+            f"[1:v]scale={PIP_WIDTH}:-2[avt];"
+            f"[0:v][avt]overlay=x={PIP_MARGIN}:y=H-{CAPTION_BAR_HEIGHT}-h-{PIP_MARGIN}:shortest=0[v1];"
+            f"[v1][2:v]overlay=x=0:y=0:shortest=0[vout]"
+        )
+        cmd = [
+            "ffmpeg", "-y", "-v", "error",
+            "-i", broll_video_path,
+            "-stream_loop", "-1", "-i", avatar_clip_path,
+            "-i", caption_track_path,
+            "-filter_complex", filter_complex,
+            "-map", "[vout]", "-map", "0:a",
+            "-c:v", "libx264", "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", "192k",
+            "-t", f"{duration_seconds:.3f}",
+            str(out_path),
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        if result.returncode != 0:
+            self._job_status[video_asset.id] = GenerationStatus.FAILED
+            raise RuntimeError(f"compose_pip_and_captions: ffmpeg composite failed (exit {result.returncode}): {result.stderr}")
+
+        video_asset.storage_path_mp4 = str(out_path)
+        video_asset.renderer_name = "ffmpeg-subprocess-pip-captions"
+        video_asset.duration_seconds = duration_seconds
+        video_asset.generation_status = GenerationStatus.COMPLETE
+        self._job_status[video_asset.id] = GenerationStatus.COMPLETE
+        return video_asset
 
     # ---------------------------------------------------------------- VideoRenderer ABC
 
