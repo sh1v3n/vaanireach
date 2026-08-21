@@ -60,6 +60,10 @@ def test_generates_a_hindi_video_reusing_the_same_images():
     assert any("ऀ" <= ch <= "ॿ" for s in result.scenes for ch in s.narration_segment_text)
     assert result.srt_text.strip() != ""
     assert result.vtt_text.startswith("WEBVTT")
+    # captions/subtitles stay in English regardless of audio language —
+    # only the spoken audio is Hindi, not what's displayed on screen
+    assert not any("ऀ" <= ch <= "ॿ" for ch in result.srt_text), "captions must stay English even for Hindi audio"
+    assert not any("ऀ" <= ch <= "ॿ" for ch in result.vtt_text), "captions must stay English even for Hindi audio"
     assert result.facts == facts
     assert result.image_paths == image_paths
     assert len(result.verification_results) == len(result.scenes)

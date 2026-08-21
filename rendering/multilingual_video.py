@@ -144,14 +144,23 @@ def generate_language_video(
             "image_paths must be pre-rendered for these exact scenes, in order"
         )
 
+    # Captions (sidecar SRT/VTT and burned-in) are ALWAYS English, regardless
+    # of target_language — only the spoken AUDIO varies per language. Kept as
+    # a separate copy before translation so a Hindi/Marathi/etc. video still
+    # reads its captions in English. Durations get synced to the real,
+    # TTS-measured timing below so captions stay in sync with whichever
+    # language's audio actually plays.
+    english_scenes = [s.model_copy() for s in scenes]
+
     if target_language != LanguageCode.EN:
         scenes = translate_scenes(scenes, translator, target_language=target_language)
 
     tts = tts_provider or SarvamTTSProvider()
     audio_paths: list[str] = []
-    for scene in scenes:
+    for scene, english_scene in zip(scenes, english_scenes):
         audio_asset = tts.synthesize(scene.narration_segment_text, target_language, project_id=project_id)
         scene.duration_seconds = audio_asset.duration_seconds  # real per-language duration is authoritative
+        english_scene.duration_seconds = audio_asset.duration_seconds  # captions must match the actual audio timing
         audio_paths.append(audio_asset.storage_path)
 
     claims = claims_from_scenes(scenes, project_id=project_id, language=target_language)
@@ -164,7 +173,7 @@ def generate_language_video(
         scenes=scenes, image_paths=image_paths, audio_paths=audio_paths, project_id=project_id,
         width=BROLL_WIDTH, height=BROLL_HEIGHT,
     )
-    srt_text, vtt_text = build_multi_scene_captions(scenes)
+    srt_text, vtt_text = build_multi_scene_captions(english_scenes)
 
     video_asset = broll_video_asset
     avatar_composited = False
@@ -183,7 +192,7 @@ def generate_language_video(
             )
             avatar_tier = avatar_asset.metadata.get("tier")
             caption_track_path = build_caption_track(
-                scenes, language=target_language, width=BROLL_WIDTH, height=BROLL_HEIGHT, tmp_dir=tmp_path,
+                english_scenes, language=LanguageCode.EN, width=BROLL_WIDTH, height=BROLL_HEIGHT, tmp_dir=tmp_path,
             )
             video_asset = renderer.compose_pip_and_captions(
                 broll_video_path=broll_video_asset.storage_path_mp4,
