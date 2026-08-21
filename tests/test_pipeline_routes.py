@@ -127,3 +127,47 @@ def test_job_fails_cleanly_when_the_pipeline_raises(client, monkeypatch):
             return
         time.sleep(0.05)
     raise AssertionError("job never reached failed status")
+
+
+def test_approve_then_reject_precondition_fails(client):
+    job = _create_job_and_wait(client)
+    job_id = job["job_id"]
+
+    resp = client.post(f"/pipeline/jobs/{job_id}/languages/en/approve")
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "published"
+
+    job_after = client.get(f"/pipeline/jobs/{job_id}").json()
+    assert job_after["languages"]["en"]["status"] == "published"
+
+    # already published — reject must now fail its precondition
+    resp = client.post(f"/pipeline/jobs/{job_id}/languages/en/reject")
+    assert resp.status_code == 409
+
+
+def test_reject_sets_status_to_rejected(client):
+    job = _create_job_and_wait(client)
+    job_id = job["job_id"]
+
+    resp = client.post(f"/pipeline/jobs/{job_id}/languages/en/reject")
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "rejected"
+
+
+def test_approve_unknown_language_on_a_real_job_returns_404(client):
+    job = _create_job_and_wait(client)
+    resp = client.post(f"/pipeline/jobs/{job['job_id']}/languages/ta/approve")
+    assert resp.status_code == 404
+
+
+def test_srt_and_vtt_download_endpoints(client):
+    job = _create_job_and_wait(client)
+    job_id = job["job_id"]
+
+    srt = client.get(f"/pipeline/jobs/{job_id}/captions/en.srt")
+    assert srt.status_code == 200
+    assert "fake" in srt.text
+
+    vtt = client.get(f"/pipeline/jobs/{job_id}/captions/en.vtt")
+    assert vtt.status_code == 200
+    assert vtt.text.startswith("WEBVTT")

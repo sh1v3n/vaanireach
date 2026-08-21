@@ -12,6 +12,7 @@ import threading
 import traceback
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi.responses import FileResponse, PlainTextResponse
 from pydantic import BaseModel
 
 from app.pipeline_jobs import JobRecord, JobStore, LanguageJobState
@@ -159,3 +160,71 @@ async def get_job(job_id: str) -> dict:
             "languages": languages_payload,
             "facts": facts_payload,
         }
+
+
+@router.get("/jobs/{job_id}/video/{language}")
+async def get_video(job_id: str, language: LanguageCode) -> FileResponse:
+    record = job_store.get_job(job_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Job not found.")
+    with record.lock:
+        state = record.languages.get(language)
+        if state is None or not state.result.video_asset.storage_path_mp4:
+            raise HTTPException(status_code=404, detail="No video for this language yet.")
+        path = state.result.video_asset.storage_path_mp4
+    return FileResponse(path, media_type="video/mp4")
+
+
+@router.get("/jobs/{job_id}/captions/{language}.srt")
+async def get_srt(job_id: str, language: LanguageCode) -> PlainTextResponse:
+    record = job_store.get_job(job_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Job not found.")
+    with record.lock:
+        state = record.languages.get(language)
+        if state is None:
+            raise HTTPException(status_code=404, detail="No captions for this language yet.")
+        return PlainTextResponse(state.result.srt_text, media_type="application/x-subrip")
+
+
+@router.get("/jobs/{job_id}/captions/{language}.vtt")
+async def get_vtt(job_id: str, language: LanguageCode) -> PlainTextResponse:
+    record = job_store.get_job(job_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Job not found.")
+    with record.lock:
+        state = record.languages.get(language)
+        if state is None:
+            raise HTTPException(status_code=404, detail="No captions for this language yet.")
+        return PlainTextResponse(state.result.vtt_text, media_type="text/vtt")
+
+
+def _get_pending_review_language_state(record: JobRecord, language: LanguageCode) -> LanguageJobState:
+    state = record.languages.get(language)
+    if state is None:
+        raise HTTPException(status_code=404, detail="No such language on this job.")
+    if state.status != "pending_review":
+        raise HTTPException(status_code=409, detail=f"Language is '{state.status}', not pending_review.")
+    return state
+
+
+@router.post("/jobs/{job_id}/languages/{language}/approve")
+async def approve_language(job_id: str, language: LanguageCode) -> dict:
+    record = job_store.get_job(job_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Job not found.")
+    with record.lock:
+        state = _get_pending_review_language_state(record, language)
+        state.status = "published"
+    return {"status": "published"}
+
+
+@router.post("/jobs/{job_id}/languages/{language}/reject")
+async def reject_language(job_id: str, language: LanguageCode) -> dict:
+    record = job_store.get_job(job_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Job not found.")
+    with record.lock:
+        state = _get_pending_review_language_state(record, language)
+        state.status = "rejected"
+    return {"status": "rejected"}
