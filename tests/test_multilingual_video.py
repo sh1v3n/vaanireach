@@ -282,3 +282,51 @@ def test_run_full_pipeline_raises_clearly_when_no_facts_are_extracted():
             "irrelevant text", languages=[LanguageCode.EN], project_id="test-empty",
             llm_provider=_EmptyExtractor(),
         )
+
+
+def test_run_full_pipeline_reports_progress_via_on_stage():
+    """on_stage must fire "extracting_facts" then "facts_extracted"
+    (carrying the real extracted facts — the earliest point a caller
+    can show the user anything) before any narrative planning happens.
+    Cuts the test short right after that by having the fake
+    StoryDirector raise, so this stays fast/offline — no real Groq/
+    Cloudflare network calls needed to verify this specific behavior."""
+    facts = sample_notice_facts()
+
+    class _FakeExtractor:
+        def extract_facts(self, document_id, pages, *, project_id):
+            return facts
+
+    class _StopHere(RuntimeError):
+        pass
+
+    class _RaisingDirector:
+        def plan_narrative_arc(self, facts):
+            raise _StopHere("stop before any network-dependent step")
+
+    calls: list[tuple[str, dict]] = []
+
+    with pytest.raises(_StopHere):
+        run_full_pipeline(
+            "irrelevant text", languages=[LanguageCode.EN], project_id="test-progress",
+            llm_provider=_FakeExtractor(), story_director=_RaisingDirector(),
+            on_stage=lambda name, data: calls.append((name, data)),
+        )
+
+    stage_names = [name for name, _ in calls]
+    assert stage_names == ["extracting_facts", "facts_extracted", "planning_narrative"]
+    assert calls[1][1]["facts"] == facts
+
+
+def test_run_full_pipeline_on_stage_is_optional_and_never_called_when_omitted():
+    """Existing callers that don't pass on_stage see zero behavior
+    change — no-op by default, never raises for its own sake."""
+    class _EmptyExtractor:
+        def extract_facts(self, document_id, pages, *, project_id):
+            return []
+
+    with pytest.raises(ValueError, match="zero facts"):
+        run_full_pipeline(
+            "irrelevant text", languages=[LanguageCode.EN], project_id="test-no-callback",
+            llm_provider=_EmptyExtractor(),
+        )

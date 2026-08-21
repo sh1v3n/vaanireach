@@ -22,6 +22,7 @@ from __future__ import annotations
 import logging
 import tempfile
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -231,6 +232,7 @@ def run_full_pipeline(
     visual_provider: CloudflareVisualProvider | None = None,
     tts_provider: SarvamTTSProvider | None = None,
     avatar_provider: AvatarFailoverProvider | None = None,
+    on_stage: Callable[[str, dict], None] | None = None,
 ) -> list[LanguageVideoResult]:
     """The real "raw document text in, videos out" entry point —
     replaces the hardcoded sample_notice_facts() fixture every test/demo
@@ -267,7 +269,23 @@ def run_full_pipeline(
     B-roll prompts are grounded in the FINAL narration text) run ONCE, in
     English, before the per-language loop; every language then
     translates from this same narration, exactly like the deterministic
-    baseline (StoryDirector's language-independence principle)."""
+    baseline (StoryDirector's language-independence principle).
+
+    on_stage, if given, is called synchronously at each major step —
+    (stage_name, data) — purely for progress observability (e.g. a
+    caller updating a job record's status field for a UI to poll). Never
+    called concurrently, never affects control flow, defaults to a
+    no-op: existing callers that don't pass it see zero behavior
+    change. Stage names: "extracting_facts", "facts_extracted" (data
+    includes the extracted `facts` list — the earliest point a caller
+    can show the user anything, well before narration/images/video are
+    ready), "planning_narrative", "drafting_narration",
+    "rendering_images", "generating_video" (data includes `language`,
+    fired once per requested language, in order)."""
+    def _stage(name: str, **data: object) -> None:
+        if on_stage is not None:
+            on_stage(name, data)
+
     llm = llm_provider or GroqLLMProvider()
     director = story_director or TemplateStoryDirector()
     trans = translator or GroqTranslationProvider()
@@ -275,23 +293,29 @@ def run_full_pipeline(
 
     document_id = str(uuid.uuid4())
     pages = [DocumentPage(document_id=document_id, page_number=1, raw_text=document_text)]
+    _stage("extracting_facts")
     facts = llm.extract_facts(document_id, pages, project_id=project_id)
     if not facts:
         raise ValueError(
             "run_full_pipeline: extract_facts returned zero facts — nothing to build a video from. "
             "Check GROQ_API_KEY(S) and that document_text actually contains extractable scheme/policy content."
         )
+    _stage("facts_extracted", facts=facts)
 
+    _stage("planning_narrative")
     _, scenes = director.plan_narrative_arc(facts)
+    _stage("drafting_narration")
     scenes = generate_dynamic_narration(scenes, facts, project_id=project_id)
+    _stage("rendering_images")
     image_paths = render_scene_images(scenes, visual, project_id=project_id)
 
-    return [
-        generate_language_video(
+    results = []
+    for lang in languages:
+        _stage("generating_video", language=lang)
+        results.append(generate_language_video(
             facts, image_paths, story_director=director, translator=trans,
             target_language=lang, project_id=project_id,
             tts_provider=tts_provider, avatar_provider=avatar_provider, visual_provider=visual,
             precomputed_scenes=scenes,
-        )
-        for lang in languages
-    ]
+        ))
+    return results
