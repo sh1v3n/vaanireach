@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 
 import { ReviewCard } from "@/components/ReviewCard";
+import { WorkflowSteps } from "@/components/WorkflowSteps";
 import { getJob } from "@/lib/api-client";
 import type { JobView, LanguageCode } from "@/types";
 
@@ -62,10 +63,13 @@ export default function JobPage() {
 
       <div className="bg-white px-6 py-10">
         {(job.status === "pending" || job.status === "running") && (
-          <p className="mx-auto max-w-2xl text-center text-navy-dark">
-            Generating your videos — real fact extraction, translation, TTS, and avatar lip-sync per
-            language. This takes a few minutes.
-          </p>
+          <div className="mx-auto mb-10 max-w-2xl">
+            <p className="mb-6 text-center text-sm text-navy-light">
+              Generating your video — real fact extraction, translation, TTS, and avatar lip-sync.
+              This takes a few minutes; you&apos;ll see each step below as it happens.
+            </p>
+            <WorkflowSteps stage={job.stage} />
+          </div>
         )}
 
         {job.status === "failed" && (

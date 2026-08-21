@@ -150,9 +150,18 @@ export interface PipelineFact {
   source_span: { page_number: number; text_span: string };
 }
 
+export type PipelineStage =
+  | "extracting_facts"
+  | "facts_extracted"
+  | "planning_narrative"
+  | "drafting_narration"
+  | "rendering_images"
+  | "generating_video";
+
 export interface JobView {
   job_id: string;
   status: JobStatus;
+  stage: PipelineStage | null;
   error: string | null;
   languages: Record<LanguageCode, LanguageJobView>;
   facts: PipelineFact[];
