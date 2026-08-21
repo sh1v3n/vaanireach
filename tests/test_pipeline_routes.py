@@ -275,3 +275,69 @@ def test_approve_returns_409_while_the_language_is_regenerating(client):
 
     resp = client.post(f"/pipeline/jobs/{job_id}/languages/en/approve")
     assert resp.status_code == 409
+
+
+def test_on_stage_helper_sets_stage_and_captures_facts_on_facts_extracted():
+    from app.pipeline_jobs import JobRecord
+    from app.routes.pipeline import _on_stage
+
+    record = JobRecord(job_id="test-stage")
+    facts = [SourceFact(
+        project_id="test-stage", document_id="doc-1", fact_type=FactType.AMOUNT, value="₹10,000",
+        raw_text="₹10,000", source_span=SourceSpan(document_id="doc-1", page_number=1, text_span="₹10,000"),
+        criticality=Criticality.CRITICAL, confidence=0.95, extractor_name="fake",
+    )]
+
+    _on_stage(record, "extracting_facts", {})
+    assert record.stage == "extracting_facts"
+    assert record.facts == []  # not this stage's job to set facts
+
+    _on_stage(record, "facts_extracted", {"facts": facts})
+    assert record.stage == "facts_extracted"
+    assert record.facts == facts
+
+    _on_stage(record, "rendering_images", {})
+    assert record.stage == "rendering_images"
+    assert record.facts == facts  # untouched by a later, unrelated stage
+
+
+def test_job_facts_are_visible_immediately_after_extraction_even_if_generation_later_fails(client, monkeypatch):
+    """Realistic scenario: extraction genuinely succeeds (real facts
+    found) but something downstream fails (Groq/Cloudflare/Sarvam
+    outage, etc.) — the officer should still see what was found in the
+    document, not a blank page, even though the job ends up 'failed'."""
+    facts = [SourceFact(
+        project_id="test-partial", document_id="doc-1", fact_type=FactType.DEADLINE, value="31 March 2026",
+        raw_text="31 March 2026", source_span=SourceSpan(document_id="doc-1", page_number=1, text_span="31 March 2026"),
+        criticality=Criticality.CRITICAL, confidence=0.95, extractor_name="fake",
+    )]
+
+    def failing_pipeline_after_extraction(text, *, languages, project_id, on_stage=None, **kwargs):
+        if on_stage is not None:
+            on_stage("extracting_facts", {})
+            on_stage("facts_extracted", {"facts": facts})
+        raise RuntimeError("simulated downstream failure after extraction")
+
+    monkeypatch.setattr("app.routes.pipeline.run_full_pipeline", failing_pipeline_after_extraction)
+
+    resp = client.post("/pipeline/jobs", data={"languages": ["en"], "text": "test notice text"})
+    job_id = resp.json()["job_id"]
+
+    for _ in range(50):
+        job = client.get(f"/pipeline/jobs/{job_id}").json()
+        if job["status"] == "failed":
+            break
+        time.sleep(0.05)
+    else:
+        raise AssertionError("job never reached failed status")
+
+    assert len(job["facts"]) == 1
+    assert job["facts"][0]["value"] == "31 March 2026"
+    assert "simulated downstream failure" in job["error"]
+
+
+def test_get_job_response_includes_stage_field(client):
+    job = _create_job_and_wait(client)
+    # once generation completes, stage is cleared back to None — the
+    # per-language status carries the real state instead
+    assert job["stage"] is None

@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from core.models.enums import LanguageCode
+from core.models.fact import SourceFact
 from rendering.multilingual_video import LanguageVideoResult
 
 JobStatus = Literal["pending", "running", "pending_review", "failed"]
@@ -34,7 +35,18 @@ class LanguageJobState:
 class JobRecord:
     job_id: str
     status: JobStatus = "pending"
+    stage: str | None = None
+    """The pipeline's current step (see run_full_pipeline's on_stage
+    docstring for the exact stage names) — set as generation progresses,
+    well before any language finishes. None before generation starts and
+    once the job reaches a terminal status (pending_review/failed), where
+    per-language status carries the real state instead."""
     error: str | None = None
+    facts: list[SourceFact] = field(default_factory=list)
+    """Populated as soon as extraction succeeds (the "facts_extracted"
+    stage) — independent of any language's generation finishing, so the
+    review page can show what was found in the document immediately
+    rather than waiting minutes for the first video."""
     languages: dict[LanguageCode, LanguageJobState] = field(default_factory=dict)
     lock: threading.Lock = field(default_factory=threading.Lock)
 

@@ -36,6 +36,17 @@ class CreateJobResponse(BaseModel):
     status: str
 
 
+def _on_stage(record: JobRecord, stage_name: str, data: dict) -> None:
+    """run_full_pipeline calls this synchronously on the same background
+    thread as _run_generation, one stage at a time — never concurrently
+    — so acquiring record.lock here is always safe (never contends with
+    itself)."""
+    with record.lock:
+        record.stage = stage_name
+        if stage_name == "facts_extracted":
+            record.facts = data["facts"]
+
+
 def _run_generation(record: JobRecord, document_text: str, languages: list[LanguageCode]) -> None:
     """Runs on a background thread — never touches the FastAPI event
     loop. Atomic per the design spec: either every requested language's
@@ -46,7 +57,10 @@ def _run_generation(record: JobRecord, document_text: str, languages: list[Langu
     with record.lock:
         record.status = "running"
     try:
-        results = run_full_pipeline(document_text, languages=languages, project_id=record.job_id)
+        results = run_full_pipeline(
+            document_text, languages=languages, project_id=record.job_id,
+            on_stage=lambda name, data: _on_stage(record, name, data),
+        )
     except Exception as exc:  # noqa: BLE001 - must never crash the background thread silently
         with record.lock:
             record.status = "failed"
@@ -57,6 +71,7 @@ def _run_generation(record: JobRecord, document_text: str, languages: list[Langu
         for result in results:
             record.languages[result.language] = LanguageJobState(status="pending_review", result=result)
         record.status = "pending_review"
+        record.stage = None
 
 
 @router.post("/jobs", response_model=CreateJobResponse, status_code=202)
@@ -157,16 +172,21 @@ async def get_job(job_id: str) -> dict:
         languages_payload = {
             lang.value: _serialize_language_state(job_id, state) for lang, state in record.languages.items()
         }
-        facts_payload = []
-        if record.languages:
-            any_result = next(iter(record.languages.values())).result
-            facts_payload = [_serialize_fact(f) for f in any_result.facts]
+        # record.facts is populated as soon as extraction succeeds (the
+        # "facts_extracted" stage) — available well before any language
+        # finishes, so the review page can show what was found in the
+        # document immediately. Falls back to a completed language's own
+        # facts (identical data) for jobs from before this field existed.
+        facts_source = record.facts or (
+            next(iter(record.languages.values())).result.facts if record.languages else []
+        )
         return {
             "job_id": record.job_id,
             "status": record.status,
+            "stage": record.stage,
             "error": record.error,
             "languages": languages_payload,
-            "facts": facts_payload,
+            "facts": [_serialize_fact(f) for f in facts_source],
         }
 
 
