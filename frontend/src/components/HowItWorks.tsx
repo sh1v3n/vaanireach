@@ -10,8 +10,16 @@ const STEPS = [
 
 export function HowItWorks() {
   return (
-    <section className="mx-auto max-w-4xl px-6 py-16">
-      <h2 className="mb-10 text-center font-serifDisplay text-2xl text-navy-dark">How it works</h2>
+    <section id="how-it-works" className="mx-auto max-w-4xl px-6 py-20">
+      <motion.h2
+        initial={{ opacity: 0, y: 12 }}
+        whileInView={{ opacity: 1, y: 0 }}
+        viewport={{ once: true }}
+        transition={{ duration: 0.4 }}
+        className="mb-10 text-center font-serifDisplay text-2xl text-navy-dark md:text-3xl"
+      >
+        How it works
+      </motion.h2>
       <div className="grid gap-8 md:grid-cols-3">
         {STEPS.map((step, i) => (
           <motion.div
@@ -19,8 +27,9 @@ export function HowItWorks() {
             initial={{ opacity: 0, y: 24 }}
             whileInView={{ opacity: 1, y: 0 }}
             viewport={{ once: true }}
+            whileHover={{ y: -4 }}
             transition={{ duration: 0.5, delay: i * 0.15 }}
-            className="rounded-lg border border-gold/30 bg-white p-6 shadow-sm"
+            className="rounded-lg border border-gold/30 bg-white p-6 shadow-sm transition-shadow hover:shadow-lg"
           >
             <div className="mb-3 font-serifDisplay text-3xl text-gold">{i + 1}</div>
             <h3 className="mb-2 font-semibold text-navy-dark">{step.title}</h3>
