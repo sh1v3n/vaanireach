@@ -94,3 +94,65 @@ export interface WorkflowEvent {
   message: string;
   timestamp: string;
 }
+
+export type NarrativeRole =
+  | "hook"
+  | "context"
+  | "problem"
+  | "announcement"
+  | "benefit"
+  | "eligibility"
+  | "how_to"
+  | "deadline"
+  | "urgency"
+  | "cta"
+  | "closing";
+
+export type JobStatus = "pending" | "running" | "pending_review" | "failed";
+export type LanguageJobStatus = "pending_review" | "published" | "rejected";
+
+export interface PipelineScene {
+  id: string;
+  order_index: number;
+  narrative_role: NarrativeRole;
+  narration_segment_text: string;
+  source_fact_ids: string[];
+  claim_ids: string[]; // join key into LanguageJobView.verification_results[].claim_id
+}
+
+export interface PipelineVerificationResult {
+  claim_id: string;
+  status: VerificationStatus;
+  is_blocking: boolean;
+  explanation: string;
+}
+
+export interface LanguageJobView {
+  status: LanguageJobStatus;
+  regenerating: boolean;
+  avatar_tier: number | null;
+  avatar_composited: boolean;
+  video_url: string;
+  srt_url: string;
+  vtt_url: string;
+  scenes: PipelineScene[];
+  verified_count: number;
+  blocking_count: number;
+  verification_results: PipelineVerificationResult[];
+}
+
+export interface PipelineFact {
+  id: string;
+  fact_type: FactType;
+  value: string;
+  raw_text: string;
+  source_span: { page_number: number; text_span: string };
+}
+
+export interface JobView {
+  job_id: string;
+  status: JobStatus;
+  error: string | null;
+  languages: Record<LanguageCode, LanguageJobView>;
+  facts: PipelineFact[];
+}
