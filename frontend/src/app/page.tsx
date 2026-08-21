@@ -30,6 +30,24 @@ export default function HomePage() {
     setPace(next === "news" ? 1.1 : 0.95); // matches DEFAULT_PACE_FOR_STYLE — still user-overridable via the slider
   }
 
+  // Clear a stale validation error as soon as the user starts fixing the
+  // input that caused it, instead of leaving it on screen until the next
+  // submit click.
+  function handleFileChange(next: File | null) {
+    setFile(next);
+    setError(null);
+  }
+
+  function handleTextChange(next: string) {
+    setText(next);
+    setError(null);
+  }
+
+  function handleLanguagesChange(next: LanguageCode[]) {
+    setLanguages(next);
+    setError(null);
+  }
+
   async function handleSubmit() {
     setError(null);
     if (!file && !text.trim()) {
@@ -83,18 +101,18 @@ export default function HomePage() {
             className="rounded-xl bg-white p-6 text-navy-dark shadow-2xl md:p-8"
           >
             <label className="mb-2 block text-sm font-medium">Government notice</label>
-            <DropZone file={file} onFileChange={setFile} />
+            <DropZone file={file} onFileChange={handleFileChange} />
 
             <label className="mb-1 mt-5 block text-sm font-medium">...or paste the notice text directly</label>
             <textarea
               value={text}
-              onChange={(e) => setText(e.target.value)}
+              onChange={(e) => handleTextChange(e.target.value)}
               rows={5}
               placeholder="Paste raw notice text here if you don't have a file handy."
               className="mb-4 w-full rounded border border-navy-light/30 p-3 text-sm"
             />
             <label className="mb-2 block text-sm font-medium">Languages to generate</label>
-            <LanguagePicker selected={languages} onChange={setLanguages} />
+            <LanguagePicker selected={languages} onChange={handleLanguagesChange} />
 
             <div className="mt-6 border-t border-navy-light/20 pt-6">
               <VoicePicker
