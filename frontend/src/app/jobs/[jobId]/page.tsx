@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 
+import { FactLedgerFlow } from "@/components/FactLedgerFlow";
 import { ReviewCard } from "@/components/ReviewCard";
 import { WorkflowSteps } from "@/components/WorkflowSteps";
 import { getJob } from "@/lib/api-client";
@@ -82,18 +83,8 @@ export default function JobPage() {
           </p>
         )}
 
-        {job.facts.length > 0 && (
-          <div className="mx-auto mb-8 max-w-4xl rounded-lg border border-gold/30 bg-gold/5 p-4">
-            <h2 className="mb-2 text-sm font-semibold text-navy-dark">Detected facts</h2>
-            <ul className="space-y-1 text-sm text-navy-light">
-              {job.facts.map((fact) => (
-                <li key={fact.id}>
-                  <span className="font-medium capitalize">{fact.fact_type}</span>: {fact.value}
-                  <span className="ml-2 text-xs italic">— &quot;{fact.source_span.text_span}&quot;</span>
-                </li>
-              ))}
-            </ul>
-          </div>
+        {(job.status === "pending" || job.status === "running" || job.facts.length > 0) && (
+          <FactLedgerFlow facts={job.facts} stage={job.stage} />
         )}
 
         <div className="mx-auto grid max-w-4xl gap-6">
