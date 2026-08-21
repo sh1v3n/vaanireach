@@ -217,3 +217,43 @@ def test_edit_unknown_scene_returns_404(client):
         json={"scene_id": "does-not-exist", "narration_segment_text": "anything"},
     )
     assert resp.status_code == 404
+
+
+def test_regenerate_reuses_the_stored_facts_and_image_paths_via_precomputed_scenes(client, monkeypatch):
+    job = _create_job_and_wait(client)
+    job_id = job["job_id"]
+
+    calls = []
+
+    def fake_generate_language_video(facts, image_paths, *, precomputed_scenes, **kwargs):
+        calls.append({"facts": facts, "image_paths": image_paths, "precomputed_scenes": precomputed_scenes})
+        return _fake_result(LanguageCode.EN, job_id)
+
+    monkeypatch.setattr("app.routes.pipeline.generate_language_video", fake_generate_language_video)
+
+    resp = client.post(f"/pipeline/jobs/{job_id}/languages/en/regenerate")
+    assert resp.status_code == 202
+
+    for _ in range(50):
+        job_after = client.get(f"/pipeline/jobs/{job_id}").json()
+        if not job_after["languages"]["en"]["regenerating"]:
+            break
+        time.sleep(0.05)
+    else:
+        raise AssertionError("regenerate never finished")
+
+    assert job_after["languages"]["en"]["status"] == "pending_review"
+    assert len(calls) == 1
+    # precomputed_scenes was passed (not None) — proof the narration LLM/story
+    # planning step was skipped, not re-run
+    assert calls[0]["precomputed_scenes"] is not None
+    assert len(calls[0]["precomputed_scenes"]) == 1
+
+
+def test_regenerate_on_a_non_pending_review_language_returns_409(client):
+    job = _create_job_and_wait(client)
+    job_id = job["job_id"]
+    client.post(f"/pipeline/jobs/{job_id}/languages/en/approve")
+
+    resp = client.post(f"/pipeline/jobs/{job_id}/languages/en/regenerate")
+    assert resp.status_code == 409

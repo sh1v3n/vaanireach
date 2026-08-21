@@ -19,8 +19,10 @@ from app.pipeline_jobs import JobRecord, JobStore, LanguageJobState
 from core.models.claim import Claim
 from core.models.enums import Criticality, LanguageCode
 from providers.documents.text_extraction import extract_text_from_upload_bytes
+from providers.narrative.template_story_director import TemplateStoryDirector
+from providers.translation.groq_translation_provider import GroqTranslationProvider
 from providers.verification.deterministic_fact_verifier import DeterministicFactVerifier
-from rendering.multilingual_video import run_full_pipeline
+from rendering.multilingual_video import generate_language_video, run_full_pipeline
 
 router = APIRouter(prefix="/pipeline", tags=["pipeline"])
 job_store = JobStore()
@@ -266,3 +268,41 @@ async def edit_scene(job_id: str, language: LanguageCode, payload: EditSceneRequ
         "narration_segment_text": scene.narration_segment_text,
         "verification": _serialize_verification_result(verification),
     }
+
+
+def _run_regenerate(record: JobRecord, language: LanguageCode) -> None:
+    with record.lock:
+        state = record.languages[language]
+        facts = state.result.facts
+        image_paths = state.result.image_paths
+        scenes = state.result.scenes
+
+    try:
+        new_result = generate_language_video(
+            facts, image_paths, story_director=TemplateStoryDirector(), translator=GroqTranslationProvider(),
+            target_language=language, project_id=record.job_id, precomputed_scenes=scenes,
+        )
+    except Exception:  # noqa: BLE001 - a failed regenerate must never crash the thread or corrupt state
+        with record.lock:
+            record.languages[language].regenerating = False
+        return
+
+    with record.lock:
+        record.languages[language] = LanguageJobState(status="pending_review", result=new_result)
+
+
+@router.post("/jobs/{job_id}/languages/{language}/regenerate", status_code=202)
+async def regenerate_language(job_id: str, language: LanguageCode) -> dict:
+    record = job_store.get_job(job_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Job not found.")
+
+    with record.lock:
+        state = _get_pending_review_language_state(record, language)
+        if state.regenerating:
+            raise HTTPException(status_code=409, detail="Already regenerating this language.")
+        state.regenerating = True
+
+    thread = threading.Thread(target=_run_regenerate, args=(record, language), daemon=True)
+    thread.start()
+    return {"status": "regenerating"}
