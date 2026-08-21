@@ -52,3 +52,25 @@ def test_calling_twice_still_passes_the_same_prompt_both_times():
     get_avatar_source_image(fake)
     get_avatar_source_image(fake)
     assert fake.calls[0][0] == fake.calls[1][0]
+
+
+def test_male_and_female_gender_use_different_prompts():
+    """The avatar's on-screen gender must follow the chosen voice — two
+    distinct, separately-cached prompts, not one fixed portrait for
+    every voice regardless of gender."""
+    fake = _FakeVisualProvider()
+    get_avatar_source_image(fake, "male")
+    get_avatar_source_image(fake, "female")
+    male_prompt, _, _, _ = fake.calls[0]
+    female_prompt, _, _, _ = fake.calls[1]
+    assert male_prompt != female_prompt
+    assert "male" in male_prompt.lower()
+    assert "female" in female_prompt.lower()
+
+
+def test_default_gender_is_male_and_matches_the_legacy_constant():
+    """Backward compatibility: existing callers that don't pass a gender
+    (or predate this feature) get exactly the same prompt as before."""
+    fake = _FakeVisualProvider()
+    get_avatar_source_image(fake)
+    assert fake.calls[0][0] == AVATAR_IMAGE_PROMPT

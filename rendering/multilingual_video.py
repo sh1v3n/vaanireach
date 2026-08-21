@@ -35,9 +35,10 @@ from core.models.media import VideoAsset
 from core.models.verification import VerificationResult
 from core.models.storyboard import Scene
 from providers.llm.groq_provider import GroqLLMProvider
-from providers.narrative.dynamic_narration import generate_dynamic_narration
+from providers.narrative.dynamic_narration import DEFAULT_PACE_FOR_STYLE, NarrationStyle, generate_dynamic_narration
 from providers.narrative.template_story_director import TemplateStoryDirector
 from providers.tts.sarvam_tts_provider import SarvamTTSProvider
+from providers.tts.sarvam_voices import DEFAULT_SPEAKER as SARVAM_DEFAULT_SPEAKER, VoiceGender, gender_for_voice
 from providers.translation.groq_translation_provider import GroqTranslationProvider, translate_scenes
 from providers.verification.deterministic_fact_verifier import DeterministicFactVerifier, claims_from_scenes
 from providers.video.avatar_portrait import get_avatar_source_image
@@ -112,12 +113,24 @@ def generate_language_video(
     avatar_provider: AvatarFailoverProvider | None = None,
     visual_provider: CloudflareVisualProvider | None = None,
     precomputed_scenes: list[Scene] | None = None,
+    speaker: str = SARVAM_DEFAULT_SPEAKER,
+    pace: float = 1.0,
+    pitch: float | None = None,
+    voice_gender: VoiceGender = "male",
 ) -> LanguageVideoResult:
     """image_paths must already be rendered (same order as
     story_director.plan_narrative_arc(facts)'s scenes, or as
     precomputed_scenes if given) — this function doesn't regenerate
     images, it only varies narration/audio/timing per language, per the
     module docstring.
+
+    speaker/pace/pitch pass straight through to SarvamTTSProvider
+    (pitch is silently ignored by Sarvam unless speaker resolves to a
+    bulbul:v2 voice — see providers/tts/sarvam_voices.py). voice_gender
+    is NOT derived from speaker here — the caller (run_full_pipeline,
+    or the backend) is responsible for that, keeping this module free
+    of voice-roster knowledge; it only decides which avatar portrait
+    (get_avatar_source_image) to use.
 
     precomputed_scenes lets a caller (run_full_pipeline) supply
     already-planned, English-language scenes — e.g. ones that have been
@@ -159,7 +172,10 @@ def generate_language_video(
     tts = tts_provider or SarvamTTSProvider()
     audio_paths: list[str] = []
     for scene, english_scene in zip(scenes, english_scenes):
-        audio_asset = tts.synthesize(scene.narration_segment_text, target_language, project_id=project_id)
+        audio_asset = tts.synthesize(
+            scene.narration_segment_text, target_language, f"sarvam:{speaker}",
+            project_id=project_id, pace=pace, pitch=pitch,
+        )
         scene.duration_seconds = audio_asset.duration_seconds  # real per-language duration is authoritative
         english_scene.duration_seconds = audio_asset.duration_seconds  # captions must match the actual audio timing
         audio_paths.append(audio_asset.storage_path)
@@ -185,7 +201,7 @@ def generate_language_video(
         with tempfile.TemporaryDirectory(prefix="avatar_pip_") as tmp:
             tmp_path = Path(tmp)
             full_audio_path = concat_audio_files(audio_paths, tmp_path)
-            avatar_portrait_path = get_avatar_source_image(visual)
+            avatar_portrait_path = get_avatar_source_image(visual, voice_gender)
             full_narration_text = " ".join(s.narration_segment_text for s in scenes)[:300]
             avatar_asset = avatar.generate_avatar_hook(
                 avatar_portrait_path, str(full_audio_path), project_id=project_id,
@@ -233,6 +249,10 @@ def run_full_pipeline(
     tts_provider: SarvamTTSProvider | None = None,
     avatar_provider: AvatarFailoverProvider | None = None,
     on_stage: Callable[[str, dict], None] | None = None,
+    speaker: str = SARVAM_DEFAULT_SPEAKER,
+    style: NarrationStyle = "news",
+    pace: float | None = None,
+    pitch: float | None = None,
 ) -> list[LanguageVideoResult]:
     """The real "raw document text in, videos out" entry point —
     replaces the hardcoded sample_notice_facts() fixture every test/demo
@@ -281,7 +301,19 @@ def run_full_pipeline(
     can show the user anything, well before narration/images/video are
     ready), "planning_narrative", "drafting_narration",
     "rendering_images", "generating_video" (data includes `language`,
-    fired once per requested language, in order)."""
+    fired once per requested language, in order).
+
+    speaker selects the Sarvam voice (see providers/tts/sarvam_voices.py
+    for the curated, gender-tagged roster) — the avatar's on-screen
+    gender automatically follows it (voices_by_gender/gender_for_voice),
+    so a female voice always gets a female avatar portrait and vice
+    versa. style picks the narration's writing register (news vs
+    storytelling — see dynamic_narration.py's NarrationStyle; Sarvam's
+    TTS API has no native style parameter, so this is the only place a
+    style choice can actually change anything). pace, if omitted,
+    defaults to a style-appropriate value (DEFAULT_PACE_FOR_STYLE) —
+    pass an explicit value to override. pitch is silently ignored by
+    Sarvam unless speaker resolves to a bulbul:v2 voice."""
     def _stage(name: str, **data: object) -> None:
         if on_stage is not None:
             on_stage(name, data)
@@ -290,6 +322,8 @@ def run_full_pipeline(
     director = story_director or TemplateStoryDirector()
     trans = translator or GroqTranslationProvider()
     visual = visual_provider or CloudflareVisualProvider()
+    resolved_pace = pace if pace is not None else DEFAULT_PACE_FOR_STYLE[style]
+    voice_gender = gender_for_voice(speaker)
 
     document_id = str(uuid.uuid4())
     pages = [DocumentPage(document_id=document_id, page_number=1, raw_text=document_text)]
@@ -305,7 +339,7 @@ def run_full_pipeline(
     _stage("planning_narrative")
     _, scenes = director.plan_narrative_arc(facts)
     _stage("drafting_narration")
-    scenes = generate_dynamic_narration(scenes, facts, project_id=project_id)
+    scenes = generate_dynamic_narration(scenes, facts, project_id=project_id, style=style)
     _stage("rendering_images")
     image_paths = render_scene_images(scenes, visual, project_id=project_id)
 
@@ -317,5 +351,6 @@ def run_full_pipeline(
             target_language=lang, project_id=project_id,
             tts_provider=tts_provider, avatar_provider=avatar_provider, visual_provider=visual,
             precomputed_scenes=scenes,
+            speaker=speaker, pace=resolved_pace, pitch=pitch, voice_gender=voice_gender,
         ))
     return results

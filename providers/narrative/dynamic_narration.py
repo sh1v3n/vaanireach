@@ -26,6 +26,7 @@ varies per language) is unchanged.
 from __future__ import annotations
 
 import logging
+from typing import Literal
 
 from core.models.enums import VerificationStatus
 from core.models.fact import SourceFact
@@ -35,6 +36,28 @@ from providers.narrative.template_story_director import estimate_narration_durat
 from providers.verification.deterministic_fact_verifier import DeterministicFactVerifier, claims_from_scenes
 
 logger = logging.getLogger("vaanireach.providers.narrative.dynamic_narration")
+
+NarrationStyle = Literal["news", "storytelling"]
+
+# Sarvam's TTS API has no native "style"/"tone" parameter (verified
+# against docs.sarvam.ai/api-reference/text-to-speech) — the only place
+# a style choice can actually change anything is in how the narration
+# text itself is WRITTEN, not the audio synthesis. Kept short and
+# concrete rather than vague adjectives, so the LLM has something
+# specific to act on.
+_STYLE_GUIDANCE: dict[NarrationStyle, str] = {
+    "news": (
+        "Write in a crisp, formal news-anchor register: short declarative sentences, no rhetorical "
+        "questions, no informal contractions."
+    ),
+    "storytelling": (
+        "Write in a warmer, narrative register: direct address to the viewer, natural spoken rhythm, "
+        "contractions are fine — still concise, just less clipped than a news bulletin."
+    ),
+}
+# A style-appropriate default pace nudge — the ffmpeg/Sarvam side still
+# lets the user override this explicitly (see backend/app/routes/pipeline.py).
+DEFAULT_PACE_FOR_STYLE: dict[NarrationStyle, float] = {"news": 1.1, "storytelling": 0.95}
 
 _DYNAMIC_NARRATION_PROMPT_TEMPLATE = """You are a scriptwriter for a short Indian government-notice \
 outreach video, writing plain, direct spoken-English narration. For each numbered scene below, write \
@@ -55,6 +78,8 @@ facts only; how_to = how to apply; deadline = when it closes).
 The "current line" shown for each scene is today's fallback template text — match its tone and \
 directness, but do not feel bound to its exact wording or its audience assumption if the cited facts \
 don't support it.
+
+{style_guidance}
 
 Scenes:
 {scenes_block}
@@ -78,6 +103,7 @@ def generate_dynamic_narration(
     facts: list[SourceFact],
     *,
     project_id: str = "",
+    style: NarrationStyle = "news",
     groq_manager: GroqManager | None = None,
 ) -> list[Scene]:
     """Returns a new list of scenes — each with narration_segment_text
@@ -88,14 +114,20 @@ def generate_dynamic_narration(
     didn't verify. Never raises — this is a quality upgrade over the
     deterministic core, never a hard dependency, matching this
     codebase's established fallback pattern (TemplateStoryDirector,
-    AvatarFailoverProvider, generate_fact_aware_image_prompts)."""
+    AvatarFailoverProvider, generate_fact_aware_image_prompts).
+
+    style picks which register the LLM writes in (see _STYLE_GUIDANCE) —
+    the only place "style" can mean anything, since Sarvam's TTS API has
+    no native style/tone parameter of its own."""
     if not scenes:
         return scenes
 
     manager = groq_manager or GroqManager()
     facts_by_id = {f.id: f for f in facts}
     scenes_block = "\n".join(_format_scene_line(i, s, facts_by_id) for i, s in enumerate(scenes))
-    prompt = _DYNAMIC_NARRATION_PROMPT_TEMPLATE.format(scenes_block=scenes_block, count=len(scenes))
+    prompt = _DYNAMIC_NARRATION_PROMPT_TEMPLATE.format(
+        scenes_block=scenes_block, count=len(scenes), style_guidance=_STYLE_GUIDANCE[style],
+    )
 
     try:
         raw = manager.generate_json(prompt, temperature=0.6)

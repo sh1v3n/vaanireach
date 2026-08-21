@@ -264,18 +264,27 @@ class SarvamTTSManager:
         language_code: str,
         speaker: str = DEFAULT_SPEAKER,
         model: str = DEFAULT_MODEL,
+        pace: float = 1.0,
+        pitch: float | None = None,
         speech_sample_rate: int = 24000,
     ) -> bytes:
-        """Returns raw WAV bytes for one chunk of text (<= MAX_CHARS_PER_REQUEST)."""
+        """Returns raw WAV bytes for one chunk of text (<= MAX_CHARS_PER_REQUEST).
+
+        pitch is only meaningful on model="bulbul:v2" — Sarvam silently
+        ignores it on bulbul:v3 (see providers/tts/sarvam_voices.py's
+        supports_pitch()). Passed through as-is here; the caller decides
+        whether to offer it."""
         payload = {
             "text": text,
             "language_code": language_code,
             "speaker": speaker.lower(),
             "model": model,
-            "pace": 1.0,
+            "pace": pace,
             "speech_sample_rate": speech_sample_rate,
             "output_audio_codec": "wav",
         }
+        if pitch is not None:
+            payload["pitch"] = pitch
 
         def _do(api_key: str) -> bytes:
             response = self._session.post(
@@ -301,6 +310,8 @@ class SarvamTTSManager:
         language_code: str,
         speaker: str = DEFAULT_SPEAKER,
         model: str = DEFAULT_MODEL,
+        pace: float = 1.0,
+        pitch: float | None = None,
     ) -> bytes:
         """Chunks long text across Sarvam's per-request character limit
         and stitches the resulting WAV chunks back into one file. If a
@@ -312,7 +323,9 @@ class SarvamTTSManager:
         if not chunks:
             raise ValueError("synthesize_text: empty text")
         wav_chunks = [
-            self.synthesize_chunk(chunk, language_code=language_code, speaker=speaker, model=model)
+            self.synthesize_chunk(
+                chunk, language_code=language_code, speaker=speaker, model=model, pace=pace, pitch=pitch,
+            )
             for chunk in chunks
         ]
         return _concat_wav_bytes(wav_chunks)

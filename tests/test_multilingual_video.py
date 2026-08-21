@@ -93,6 +93,32 @@ def test_english_target_skips_translation_but_still_regenerates_video():
         assert scene.narration_segment_text == original.narration_segment_text
 
 
+@pytest.mark.skipif(not _HAS_KEYS, reason="GROQ_API_KEY/SARVAM_API_KEYS not set")
+def test_female_voice_pace_and_pitch_are_accepted_by_real_sarvam():
+    """Live check that Sarvam genuinely accepts the new speaker/pace/
+    pitch request fields — a female bulbul:v2 voice (the only tier
+    with real pitch support) at non-default pace/pitch values. If
+    Sarvam ever rejected these (400/422), this call would raise and
+    fail the test; the avatar step is faked per this file's usual
+    pattern to avoid a real, paid Hedra/D-ID call."""
+    facts = sample_notice_facts()
+    director = TemplateStoryDirector()
+    _, scenes = director.plan_narrative_arc(facts)
+    renderer = PilSceneRenderer()
+    image_paths = [renderer.render_scene(s).storage_path for s in scenes]
+
+    result = generate_language_video(
+        facts, image_paths,
+        story_director=director, translator=GroqTranslationProvider(),
+        target_language=LanguageCode.EN, project_id="multilingual-test-voice",
+        avatar_provider=_FakeAvatarProvider(), visual_provider=_FakeVisualProvider(),
+        speaker="anushka", pace=1.3, pitch=0.4, voice_gender="female",
+    )
+    assert result.language == LanguageCode.EN
+    assert result.video_asset.storage_path_mp4 is not None
+    assert Path(result.video_asset.storage_path_mp4).exists()
+
+
 def test_mismatched_image_count_raises_clearly():
     facts = sample_notice_facts()
     director = TemplateStoryDirector()

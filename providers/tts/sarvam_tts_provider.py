@@ -31,12 +31,12 @@ from core.interfaces.tts_provider import TTSProvider
 from core.models.enums import GenerationStatus, LanguageCode
 from core.models.media import AudioAsset
 from providers.tts.sarvam_client import (
-    DEFAULT_MODEL as SARVAM_MODEL,
     DEFAULT_SPEAKER as SARVAM_DEFAULT_SPEAKER,
     SarvamAllKeysExhaustedError,
     SarvamRequestError,
     SarvamTTSManager,
 )
+from providers.tts.sarvam_voices import VOICE_GENDER, model_for_voice
 
 logger = logging.getLogger("vaanireach.providers.sarvam_tts_provider")
 
@@ -70,12 +70,9 @@ _LANG_TO_EDGE_VOICE: dict[LanguageCode, str] = {
     LanguageCode.GU: "gu-IN-DhwaniNeural",
 }
 
-# A representative slice of Sarvam's 30+ bulbul speakers (lowercase, per
-# the API's case-sensitive requirement) — used for list_voices().
-SARVAM_SPEAKERS = [
-    "shubh", "aditya", "ritu", "priya", "neha", "rahul", "pooja", "rohan",
-    "simran", "kavya", "anushka", "meera",
-]
+# The curated, gender-tagged voice roster (providers/tts/sarvam_voices.py)
+# — used for list_voices(). Sorted for a stable, predictable order.
+SARVAM_SPEAKERS = sorted(VOICE_GENDER.keys())
 
 
 def _edge_tts_synthesize(text: str, voice: str) -> bytes:
@@ -189,11 +186,22 @@ class SarvamTTSProvider(TTSProvider):
         *,
         project_id: str,
         script_id: str | None = None,
+        pace: float = 1.0,
+        pitch: float | None = None,
     ) -> AudioAsset:
         """NOTE: same documented Phase 0 interface gap as
         providers/llm/gemini_provider.py — AudioAsset.project_id is
         required by the model but the ABC signature doesn't pass it, so
         it's added here as a required keyword-only argument.
+
+        pace/pitch are Sarvam-specific extras beyond the base
+        TTSProvider ABC (like voice_id already was) — pitch is silently
+        dropped by Sarvam itself unless the resolved speaker is a
+        bulbul:v2 voice (see providers/tts/sarvam_voices.py's
+        supports_pitch(); callers should check that before setting a
+        non-default pitch, but this method never validates it — an
+        unsupported pitch value is just ignored server-side, not an
+        error here).
 
         Tries Sarvam first (horizontal key rotation inside
         SarvamTTSManager); on SarvamAllKeysExhaustedError, a rejected
@@ -207,13 +215,14 @@ class SarvamTTSProvider(TTSProvider):
         provider_name: str | None = None
         speaker = voice_id.removeprefix("sarvam:") if voice_id and voice_id.startswith("sarvam:") else SARVAM_DEFAULT_SPEAKER
         sarvam_lang = _LANG_TO_SARVAM.get(language)
+        sarvam_model = model_for_voice(speaker)
 
         if self.manager is not None and sarvam_lang is not None:
             try:
                 audio_bytes = self.manager.synthesize_text(
-                    text, language_code=sarvam_lang, speaker=speaker, model=SARVAM_MODEL
+                    text, language_code=sarvam_lang, speaker=speaker, model=sarvam_model, pace=pace, pitch=pitch,
                 )
-                provider_name = f"sarvam:{SARVAM_MODEL}:{speaker}"
+                provider_name = f"sarvam:{sarvam_model}:{speaker}"
             except SarvamAllKeysExhaustedError as exc:
                 logger.warning("synthesize: Sarvam pool exhausted (%s) — falling back to edge-tts", exc)
             except SarvamRequestError as exc:
