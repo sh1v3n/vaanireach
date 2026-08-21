@@ -1,7 +1,10 @@
 # Root-level requirements for the VaaniReach media/agent pipeline +
 # Streamlit officer dashboard (providers/, agents/, rendering/, dashboard/).
-# backend/requirements.txt remains separate (FastAPI stub app only) — both
-# can be installed into the same venv without conflicts.
+# backend/requirements.txt covers the FastAPI app's own deps (fastapi,
+# uvicorn, ...) — but backend/app/routes/pipeline.py imports the real
+# pipeline (rendering.multilingual_video), so backend/'s venv needs BOTH
+# requirements.txt files installed (see backend/README.md). Safe to
+# install into the same venv without conflicts either way.
 
 # --- Domain models (shared with backend/) ---
 pydantic>=2.9
