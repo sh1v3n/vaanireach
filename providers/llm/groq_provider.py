@@ -109,8 +109,13 @@ Valid fact_type values: {fact_types}
 
 Return ONLY a JSON array. Each element must have exactly these keys:
 - "fact_type": one of the valid fact_type values above
-- "value": the normalized value (e.g. "₹2000", "2026-03-31", "Pune district")
-- "raw_text": the exact verbatim text this was extracted from
+- "value": the normalized value, ALWAYS translated into English regardless of what \
+language the source document is written in (e.g. "₹2000", "2026-03-31", "Pune district", \
+"Free Textbook Distribution Scheme"). This field is the language-neutral fact ledger every \
+target-language video (including an English one) gets generated from, so it must never be \
+left in Hindi/Marathi/any other source language — translate it, don't just copy it.
+- "raw_text": the exact verbatim text this was extracted from, in the ORIGINAL source \
+language — do not translate this one, it exists for provenance/citation.
 - "page_number": integer page number it appears on
 - "section_heading": the nearest section heading, or null
 - "criticality": one of "low", "medium", "high", "critical" — how much a wrong/missing \
