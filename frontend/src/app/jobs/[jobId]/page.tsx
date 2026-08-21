@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 
 import { ReviewCard } from "@/components/ReviewCard";
@@ -12,6 +12,8 @@ export default function JobPage() {
   const jobId = params.jobId;
   const [job, setJob] = useState<JobView | null>(null);
   const [pollError, setPollError] = useState<string | null>(null);
+  const jobRef = useRef<JobView | null>(null);
+  jobRef.current = job;
 
   const refresh = useCallback(async () => {
     try {
@@ -25,11 +27,15 @@ export default function JobPage() {
   useEffect(() => {
     refresh();
     const interval = setInterval(() => {
-      if (job && (job.status === "pending_review" || job.status === "failed")) return;
+      const current = jobRef.current;
+      if (current && (current.status === "pending_review" || current.status === "failed")) {
+        clearInterval(interval);
+        return;
+      }
       refresh();
     }, 3000);
     return () => clearInterval(interval);
-  }, [refresh, job]);
+  }, [refresh]);
 
   if (pollError) {
     return <main className="min-h-screen bg-navy p-10 text-white">Error: {pollError}</main>;

@@ -49,6 +49,36 @@ export function ReviewCard({
     }
   }
 
+  async function handleApprove() {
+    setBusy(true);
+    try {
+      await approveLanguage(jobId, language);
+      onChanged();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleReject() {
+    setBusy(true);
+    try {
+      await rejectLanguage(jobId, language);
+      onChanged();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleRegenerate() {
+    setBusy(true);
+    try {
+      await regenerateLanguage(jobId, language);
+      onChanged();
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 16 }}
@@ -87,7 +117,7 @@ export function ReviewCard({
                   </span>
                 )}
               </div>
-              {editingSceneId === scene.id ? (
+              {editingSceneId === scene.id && view.status === "pending_review" ? (
                 <div>
                   <textarea
                     value={draftText}
@@ -142,7 +172,7 @@ export function ReviewCard({
           <button
             type="button"
             disabled={busy}
-            onClick={async () => { setBusy(true); await approveLanguage(jobId, language); onChanged(); setBusy(false); }}
+            onClick={handleApprove}
             className="rounded-full bg-green-700 px-5 py-2 text-sm font-medium text-white disabled:opacity-50"
           >
             Approve
@@ -150,7 +180,7 @@ export function ReviewCard({
           <button
             type="button"
             disabled={busy}
-            onClick={async () => { setBusy(true); await rejectLanguage(jobId, language); onChanged(); setBusy(false); }}
+            onClick={handleReject}
             className="rounded-full bg-red-700 px-5 py-2 text-sm font-medium text-white disabled:opacity-50"
           >
             Reject
@@ -158,7 +188,7 @@ export function ReviewCard({
           <button
             type="button"
             disabled={busy || view.regenerating}
-            onClick={async () => { setBusy(true); await regenerateLanguage(jobId, language); onChanged(); setBusy(false); }}
+            onClick={handleRegenerate}
             className="rounded-full border border-navy-light/30 px-5 py-2 text-sm font-medium disabled:opacity-50"
           >
             {view.regenerating ? "Regenerating…" : "Regenerate"}
