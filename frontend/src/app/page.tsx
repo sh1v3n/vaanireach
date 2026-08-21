@@ -6,16 +6,26 @@ import { motion } from "framer-motion";
 
 import { LanguagePicker } from "@/components/LanguagePicker";
 import { HowItWorks } from "@/components/HowItWorks";
+import { VoicePicker } from "@/components/VoicePicker";
 import { createJob } from "@/lib/api-client";
-import type { LanguageCode } from "@/types";
+import type { LanguageCode, NarrationStyle } from "@/types";
 
 export default function HomePage() {
   const router = useRouter();
   const [file, setFile] = useState<File | null>(null);
   const [text, setText] = useState("");
   const [languages, setLanguages] = useState<LanguageCode[]>(["en"]);
+  const [speaker, setSpeaker] = useState("shubh");
+  const [style, setStyle] = useState<NarrationStyle>("news");
+  const [pace, setPace] = useState(1.1); // matches the backend's news-style default (DEFAULT_PACE_FOR_STYLE)
+  const [pitch, setPitch] = useState<number | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  function handleStyleChange(next: NarrationStyle) {
+    setStyle(next);
+    setPace(next === "news" ? 1.1 : 0.95); // matches DEFAULT_PACE_FOR_STYLE — still user-overridable via the slider
+  }
 
   async function handleSubmit() {
     setError(null);
@@ -29,7 +39,10 @@ export default function HomePage() {
     }
     setSubmitting(true);
     try {
-      const { job_id } = await createJob({ languages, file: file ?? undefined, text: text.trim() || undefined });
+      const { job_id } = await createJob({
+        languages, file: file ?? undefined, text: text.trim() || undefined,
+        speaker, style, pace, pitch: pitch ?? undefined,
+      });
       router.push(`/jobs/${job_id}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong.");
@@ -82,6 +95,15 @@ export default function HomePage() {
             />
             <label className="mb-2 block text-sm font-medium">Languages to generate</label>
             <LanguagePicker selected={languages} onChange={setLanguages} />
+
+            <div className="mt-6 border-t border-navy-light/20 pt-6">
+              <VoicePicker
+                speaker={speaker} onSpeakerChange={setSpeaker}
+                style={style} onStyleChange={handleStyleChange}
+                pace={pace} onPaceChange={setPace}
+                pitch={pitch} onPitchChange={setPitch}
+              />
+            </div>
 
             {error && <p className="mt-4 text-sm text-red-600">{error}</p>}
 

@@ -158,6 +158,23 @@ export type PipelineStage =
   | "rendering_images"
   | "generating_video";
 
+export type VoiceGender = "male" | "female";
+export type NarrationStyle = "news" | "storytelling";
+
+export interface Voice {
+  speaker: string;
+  gender: VoiceGender;
+  supports_pitch: boolean; // only true for the smaller bulbul:v2 set — Sarvam has no pitch control on v3
+}
+
+export interface JobVoiceSettings {
+  speaker: string;
+  gender: VoiceGender;
+  style: NarrationStyle;
+  pace: number;
+  pitch: number | null;
+}
+
 export interface JobView {
   job_id: string;
   status: JobStatus;
@@ -165,4 +182,5 @@ export interface JobView {
   error: string | null;
   languages: Record<LanguageCode, LanguageJobView>;
   facts: PipelineFact[];
+  voice: JobVoiceSettings;
 }

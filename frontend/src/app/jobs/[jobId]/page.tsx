@@ -59,6 +59,10 @@ export default function JobPage() {
       <header className="bg-navy px-6 py-10 text-white">
         <h1 className="font-serifDisplay text-3xl text-gold">VaaniReach</h1>
         <p className="mt-1 text-sm text-white/70">Job {job.job_id}</p>
+        <p className="mt-1 text-xs capitalize text-white/50">
+          {job.voice.speaker} · {job.voice.gender} · {job.voice.style} · pace {job.voice.pace.toFixed(2)}×
+          {job.voice.pitch !== null && ` · pitch ${job.voice.pitch.toFixed(2)}`}
+        </p>
       </header>
 
       <div className="bg-white px-6 py-10">

@@ -4,7 +4,7 @@
  * these are wired to real UI yet; they exist so the dashboard's data
  * layer can be built against a stable shape once the backend is real.
  */
-import type { Project, SourceFact, VerificationResult, WorkflowEvent, JobView, LanguageCode } from "@/types";
+import type { Project, SourceFact, VerificationResult, WorkflowEvent, JobView, LanguageCode, NarrationStyle, Voice } from "@/types";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
 
@@ -30,11 +30,30 @@ export async function getWorkflowTrace(_projectId: string): Promise<WorkflowEven
   return notImplemented("getWorkflowTrace");
 }
 
-export async function createJob(input: { languages: LanguageCode[]; file?: File; text?: string }): Promise<{ job_id: string; status: string }> {
+export async function listVoices(): Promise<Voice[]> {
+  const resp = await fetch(`${API_BASE_URL}/pipeline/voices`);
+  if (!resp.ok) throw new Error(`listVoices failed: ${resp.status} ${await resp.text()}`);
+  const body = await resp.json();
+  return body.voices;
+}
+
+export async function createJob(input: {
+  languages: LanguageCode[];
+  file?: File;
+  text?: string;
+  speaker?: string;
+  style?: NarrationStyle;
+  pace?: number;
+  pitch?: number;
+}): Promise<{ job_id: string; status: string }> {
   const form = new FormData();
   for (const lang of input.languages) form.append("languages", lang);
   if (input.file) form.append("file", input.file);
   if (input.text) form.append("text", input.text);
+  if (input.speaker) form.append("speaker", input.speaker);
+  if (input.style) form.append("style", input.style);
+  if (input.pace !== undefined) form.append("pace", String(input.pace));
+  if (input.pitch !== undefined) form.append("pitch", String(input.pitch));
 
   const resp = await fetch(`${API_BASE_URL}/pipeline/jobs`, { method: "POST", body: form });
   if (!resp.ok) throw new Error(`createJob failed: ${resp.status} ${await resp.text()}`);
