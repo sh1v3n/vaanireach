@@ -209,6 +209,8 @@ def _get_pending_review_language_state(record: JobRecord, language: LanguageCode
         raise HTTPException(status_code=404, detail="No such language on this job.")
     if state.status != "pending_review":
         raise HTTPException(status_code=409, detail=f"Language is '{state.status}', not pending_review.")
+    if state.regenerating:
+        raise HTTPException(status_code=409, detail="Language is currently regenerating.")
     return state
 
 
@@ -299,8 +301,6 @@ async def regenerate_language(job_id: str, language: LanguageCode) -> dict:
 
     with record.lock:
         state = _get_pending_review_language_state(record, language)
-        if state.regenerating:
-            raise HTTPException(status_code=409, detail="Already regenerating this language.")
         state.regenerating = True
 
     thread = threading.Thread(target=_run_regenerate, args=(record, language), daemon=True)

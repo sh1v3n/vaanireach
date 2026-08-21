@@ -257,3 +257,21 @@ def test_regenerate_on_a_non_pending_review_language_returns_409(client):
 
     resp = client.post(f"/pipeline/jobs/{job_id}/languages/en/regenerate")
     assert resp.status_code == 409
+
+
+def test_approve_returns_409_while_the_language_is_regenerating(client):
+    """Closes a race: a Regenerate in flight must block Approve/Reject,
+    otherwise an approval landing mid-regenerate gets silently
+    overwritten (un-published with no error) the instant the
+    background thread finishes and replaces the LanguageJobState."""
+    job = _create_job_and_wait(client)
+    job_id = job["job_id"]
+
+    from app.routes.pipeline import job_store
+
+    record = job_store.get_job(job_id)
+    with record.lock:
+        record.languages[LanguageCode.EN].regenerating = True
+
+    resp = client.post(f"/pipeline/jobs/{job_id}/languages/en/approve")
+    assert resp.status_code == 409
