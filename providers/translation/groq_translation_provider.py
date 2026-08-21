@@ -23,7 +23,11 @@ preserve these tokens verbatim works reliably.
 """
 from __future__ import annotations
 
+import logging
 import os
+import random
+import re
+import time
 
 import requests
 
@@ -32,9 +36,38 @@ from core.models.claim import Claim
 from core.models.enums import LanguageCode
 from core.models.storyboard import Scene
 
+logger = logging.getLogger("vaanireach.providers.groq_translation")
+
 GROQ_CHAT_URL = "https://api.groq.com/openai/v1/chat/completions"
 DEFAULT_MODEL = "openai/gpt-oss-120b"
 REQUEST_TIMEOUT_SECONDS = 30.0
+
+# Real incident, 2026-08-21: a live job failed outright — not a bad key,
+# but a transient Groq per-minute TOKEN window (TPM) limit ("Rate limit
+# reached ... Please try again in 6.2s"), which this provider previously
+# had ZERO retry logic for — one 429 killed the whole job even though
+# Groq's own error message says it would have worked seconds later.
+# Same resilience shape as providers/llm/groq_client.py's GroqManager,
+# but simpler: this provider only ever has one key (no multi-key
+# rotation — see the module docstring), so the only real recovery is
+# waiting out the window and retrying that same key.
+MAX_RETRIES = 3
+MAX_RATE_LIMIT_WAIT_SECONDS = 30.0
+_RETRY_AFTER_RE = re.compile(r"try again in\s+([\d.]+)\s*s", re.IGNORECASE)
+
+
+def _parse_retry_after_seconds(text: str) -> float | None:
+    """Extracts Groq's own suggested wait time from a 429 error message,
+    e.g. '...Please try again in 6.217499999s.'. Returns None if the
+    message doesn't contain the expected hint (caller falls back to a
+    fixed default wait)."""
+    match = _RETRY_AFTER_RE.search(text)
+    if not match:
+        return None
+    try:
+        return float(match.group(1))
+    except ValueError:
+        return None
 
 _LANGUAGE_NAMES: dict[LanguageCode, str] = {
     LanguageCode.EN: "English",
@@ -84,28 +117,48 @@ class GroqTranslationProvider(TranslationProvider):
         target_name = _LANGUAGE_NAMES.get(target_language, target_language.value)
         prompt = _PROMPT_TEMPLATE.format(source=source_name, target=target_name, text=text)
 
-        try:
-            response = self._session.post(
-                GROQ_CHAT_URL,
-                headers={"Authorization": f"Bearer {self.api_key}"},
-                json={"model": self.model, "messages": [{"role": "user", "content": prompt}], "temperature": 0.1},
-                timeout=REQUEST_TIMEOUT_SECONDS,
-            )
-        except requests.exceptions.RequestException as exc:
-            raise GroqTranslationRequestError(f"network error calling Groq: {exc}") from exc
+        last_rate_limit_error: str | None = None
+        for attempt in range(MAX_RETRIES):
+            try:
+                response = self._session.post(
+                    GROQ_CHAT_URL,
+                    headers={"Authorization": f"Bearer {self.api_key}"},
+                    json={"model": self.model, "messages": [{"role": "user", "content": prompt}], "temperature": 0.1},
+                    timeout=REQUEST_TIMEOUT_SECONDS,
+                )
+            except requests.exceptions.RequestException as exc:
+                raise GroqTranslationRequestError(f"network error calling Groq: {exc}") from exc
 
-        if response.status_code != 200:
-            raise GroqTranslationRequestError(f"Groq returned {response.status_code}: {response.text[:300]}")
+            if response.status_code == 429 and attempt < MAX_RETRIES - 1:
+                # Almost always a transient per-minute token-window limit,
+                # not a dead key — wait out Groq's own hint and retry the
+                # same key instead of failing the whole job immediately.
+                wait_s = _parse_retry_after_seconds(response.text) or 5.0
+                wait_s = min(wait_s, MAX_RATE_LIMIT_WAIT_SECONDS) + random.uniform(0, 0.5)
+                last_rate_limit_error = f"Groq returned 429: {response.text[:300]}"
+                logger.warning(
+                    "translate: Groq rate-limited (attempt %d/%d) — waiting %.1fs for the window to reset: %s",
+                    attempt + 1, MAX_RETRIES, wait_s, response.text[:200],
+                )
+                time.sleep(wait_s)
+                continue
 
-        try:
-            content = response.json()["choices"][0]["message"]["content"]
-        except (KeyError, IndexError, ValueError) as exc:
-            raise GroqTranslationRequestError(f"unexpected Groq response shape: {response.text[:300]}") from exc
+            if response.status_code != 200:
+                raise GroqTranslationRequestError(f"Groq returned {response.status_code}: {response.text[:300]}")
 
-        translated = content.strip().strip('"').strip()
-        if not translated:
-            raise GroqTranslationRequestError(f"Groq returned an empty translation for: {text!r}")
-        return translated
+            try:
+                content = response.json()["choices"][0]["message"]["content"]
+            except (KeyError, IndexError, ValueError) as exc:
+                raise GroqTranslationRequestError(f"unexpected Groq response shape: {response.text[:300]}") from exc
+
+            translated = content.strip().strip('"').strip()
+            if not translated:
+                raise GroqTranslationRequestError(f"Groq returned an empty translation for: {text!r}")
+            return translated
+
+        # Every retry attempt was rate-limited — genuinely exhausted, not
+        # a transient blip anymore.
+        raise GroqTranslationRequestError(last_rate_limit_error or "Groq rate-limited on every retry attempt")
 
     def translate_claims(self, claims: list[Claim], target_language: LanguageCode) -> list[Claim]:
         return [
