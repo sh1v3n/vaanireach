@@ -63,8 +63,8 @@ def client(monkeypatch):
     return TestClient(app)
 
 
-def _create_job_and_wait(client, **kwargs) -> dict:
-    resp = client.post("/pipeline/jobs", data={"languages": ["en"], "text": "test notice text"}, **kwargs)
+def _create_job_and_wait(client, *, data=None, **kwargs) -> dict:
+    resp = client.post("/pipeline/jobs", data=data or {"languages": ["en"], "text": "test notice text"}, **kwargs)
     assert resp.status_code == 202
     job_id = resp.json()["job_id"]
 
@@ -341,3 +341,79 @@ def test_get_job_response_includes_stage_field(client):
     # once generation completes, stage is cleared back to None — the
     # per-language status carries the real state instead
     assert job["stage"] is None
+
+
+def test_list_voices_returns_the_curated_roster(client):
+    resp = client.get("/pipeline/voices")
+    assert resp.status_code == 200
+    voices = resp.json()["voices"]
+    by_speaker = {v["speaker"]: v for v in voices}
+    assert by_speaker["shubh"]["gender"] == "male"
+    assert by_speaker["shubh"]["supports_pitch"] is False  # bulbul:v3
+    assert by_speaker["priya"]["gender"] == "female"
+    assert by_speaker["anushka"]["supports_pitch"] is True  # bulbul:v2
+
+
+def test_create_job_with_a_female_voice_is_accepted_and_stored(client):
+    job = _create_job_and_wait(client, data={"languages": ["en"], "text": "test notice text", "speaker": "priya", "style": "storytelling"})
+    assert job["voice"]["speaker"] == "priya"
+    assert job["voice"]["gender"] == "female"
+    assert job["voice"]["style"] == "storytelling"
+
+
+def test_create_job_with_an_unknown_voice_returns_400(client):
+    resp = client.post("/pipeline/jobs", data={"languages": ["en"], "text": "test notice text", "speaker": "not-a-real-voice"})
+    assert resp.status_code == 400
+
+
+def test_create_job_with_pitch_on_an_unsupported_voice_returns_400(client):
+    resp = client.post(
+        "/pipeline/jobs",
+        data={"languages": ["en"], "text": "test notice text", "speaker": "shubh", "pitch": "0.3"},
+    )
+    assert resp.status_code == 400
+
+
+def test_create_job_with_pitch_on_a_v2_voice_is_accepted(client):
+    job = _create_job_and_wait(
+        client, data={"languages": ["en"], "text": "test notice text", "speaker": "anushka", "pitch": "0.3"},
+    )
+    assert job["voice"]["speaker"] == "anushka"
+    assert job["voice"]["pitch"] == 0.3
+
+
+def test_create_job_pace_defaults_to_the_style_appropriate_value_when_omitted(client):
+    news_job = _create_job_and_wait(client, data={"languages": ["en"], "text": "test notice text", "style": "news"})
+    assert news_job["voice"]["pace"] == 1.1
+
+    story_job = _create_job_and_wait(client, data={"languages": ["en"], "text": "test notice text", "style": "storytelling"})
+    assert story_job["voice"]["pace"] == 0.95
+
+
+def test_regenerate_reuses_the_jobs_original_voice_settings(client, monkeypatch):
+    job = _create_job_and_wait(client, data={"languages": ["en"], "text": "test notice text", "speaker": "priya", "pace": "1.25"})
+    job_id = job["job_id"]
+
+    calls = []
+
+    def fake_generate_language_video(facts, image_paths, *, precomputed_scenes, **kwargs):
+        calls.append(kwargs)
+        return _fake_result(LanguageCode.EN, job_id)
+
+    monkeypatch.setattr("app.routes.pipeline.generate_language_video", fake_generate_language_video)
+
+    resp = client.post(f"/pipeline/jobs/{job_id}/languages/en/regenerate")
+    assert resp.status_code == 202
+
+    for _ in range(50):
+        job_after = client.get(f"/pipeline/jobs/{job_id}").json()
+        if not job_after["languages"]["en"]["regenerating"]:
+            break
+        time.sleep(0.05)
+    else:
+        raise AssertionError("regenerate never finished")
+
+    assert len(calls) == 1
+    assert calls[0]["speaker"] == "priya"
+    assert calls[0]["pace"] == 1.25
+    assert calls[0]["voice_gender"] == "female"

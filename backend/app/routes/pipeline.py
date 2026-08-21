@@ -20,8 +20,10 @@ from app.pipeline_jobs import JobRecord, JobStore, LanguageJobState
 from core.models.claim import Claim
 from core.models.enums import Criticality, LanguageCode
 from providers.documents.text_extraction import extract_text_from_upload_bytes
+from providers.narrative.dynamic_narration import DEFAULT_PACE_FOR_STYLE, NarrationStyle
 from providers.narrative.template_story_director import TemplateStoryDirector
 from providers.translation.groq_translation_provider import GroqTranslationProvider
+from providers.tts.sarvam_voices import VOICE_GENDER, gender_for_voice, supports_pitch
 from providers.verification.deterministic_fact_verifier import DeterministicFactVerifier
 from rendering.multilingual_video import generate_language_video, run_full_pipeline
 
@@ -29,6 +31,20 @@ logger = logging.getLogger("vaanireach.backend.app.routes.pipeline")
 
 router = APIRouter(prefix="/pipeline", tags=["pipeline"])
 job_store = JobStore()
+
+
+@router.get("/voices")
+async def list_voices() -> dict:
+    """The curated, gender-tagged voice roster (providers/tts/sarvam_voices.py)
+    — single source of truth, so the frontend never hardcodes/duplicates
+    the speaker list and can't drift from what the backend actually
+    accepts."""
+    return {
+        "voices": [
+            {"speaker": name, "gender": gender, "supports_pitch": supports_pitch(name)}
+            for name, gender in sorted(VOICE_GENDER.items())
+        ],
+    }
 
 
 class CreateJobResponse(BaseModel):
@@ -52,14 +68,19 @@ def _run_generation(record: JobRecord, document_text: str, languages: list[Langu
     loop. Atomic per the design spec: either every requested language's
     LanguageVideoResult lands in record.languages, or the whole job is
     marked failed. No partial per-language results from this initial
-    generation (Regenerate, added in a later task, is the only place
-    per-language isolation exists)."""
+    generation (Regenerate is the only place per-language isolation
+    exists).
+
+    Reads record.speaker/style/pace/pitch without a lock — safe because
+    the route handler sets them once, before this thread is started, and
+    nothing ever mutates them afterward (see JobRecord's docstring)."""
     with record.lock:
         record.status = "running"
     try:
         results = run_full_pipeline(
             document_text, languages=languages, project_id=record.job_id,
             on_stage=lambda name, data: _on_stage(record, name, data),
+            speaker=record.speaker, style=record.style, pace=record.pace, pitch=record.pitch,
         )
     except Exception as exc:  # noqa: BLE001 - must never crash the background thread silently
         with record.lock:
@@ -79,9 +100,25 @@ async def create_job(
     languages: list[LanguageCode] = Form(...),
     text: str | None = Form(default=None),
     file: UploadFile | None = File(default=None),
+    speaker: str = Form(default="shubh"),
+    style: NarrationStyle = Form(default="news"),
+    pace: float | None = Form(default=None),
+    pitch: float | None = Form(default=None),
 ) -> CreateJobResponse:
     if not languages:
         raise HTTPException(status_code=400, detail="Select at least one language.")
+
+    speaker = speaker.lower()
+    if speaker not in VOICE_GENDER:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown voice {speaker!r}. Available: {', '.join(sorted(VOICE_GENDER))}",
+        )
+    if pitch is not None and not supports_pitch(speaker):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Voice {speaker!r} doesn't support pitch control (only bulbul:v2 voices do).",
+        )
 
     if file is not None:
         file_bytes = await file.read()
@@ -95,6 +132,10 @@ async def create_job(
         raise HTTPException(status_code=400, detail="Upload a file or provide text.")
 
     record = job_store.create_job()
+    record.speaker = speaker
+    record.style = style
+    record.pace = pace if pace is not None else DEFAULT_PACE_FOR_STYLE[style]
+    record.pitch = pitch
     # Capture status before starting the thread, not after: Thread.start()
     # internally waits for the new thread to begin running (releasing the
     # GIL to do so), so for a fast-finishing background job the thread can
@@ -187,6 +228,13 @@ async def get_job(job_id: str) -> dict:
             "error": record.error,
             "languages": languages_payload,
             "facts": [_serialize_fact(f) for f in facts_source],
+            "voice": {
+                "speaker": record.speaker,
+                "gender": gender_for_voice(record.speaker),
+                "style": record.style,
+                "pace": record.pace,
+                "pitch": record.pitch,
+            },
         }
 
 
@@ -305,6 +353,11 @@ def _run_regenerate(record: JobRecord, language: LanguageCode) -> None:
         new_result = generate_language_video(
             facts, image_paths, story_director=TemplateStoryDirector(), translator=GroqTranslationProvider(),
             target_language=language, project_id=record.job_id, precomputed_scenes=scenes,
+            # Reuse the job's original voice settings — never silently
+            # revert to the pipeline's own defaults just because
+            # Regenerate calls generate_language_video directly.
+            speaker=record.speaker, pace=record.pace, pitch=record.pitch,
+            voice_gender=gender_for_voice(record.speaker),
         )
     except Exception as exc:  # noqa: BLE001 - a failed regenerate must never crash the thread or corrupt state
         logger.exception("_run_regenerate: regenerate failed for language=%s (job=%s)", language, record.job_id)

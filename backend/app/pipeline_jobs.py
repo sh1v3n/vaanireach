@@ -17,6 +17,8 @@ from typing import Literal
 
 from core.models.enums import LanguageCode
 from core.models.fact import SourceFact
+from providers.narrative.dynamic_narration import NarrationStyle
+from providers.tts.sarvam_voices import DEFAULT_SPEAKER
 from rendering.multilingual_video import LanguageVideoResult
 
 JobStatus = Literal["pending", "running", "pending_review", "failed"]
@@ -47,6 +49,20 @@ class JobRecord:
     stage) — independent of any language's generation finishing, so the
     review page can show what was found in the document immediately
     rather than waiting minutes for the first video."""
+    speaker: str = DEFAULT_SPEAKER
+    style: NarrationStyle = "news"
+    pace: float = 1.0
+    """Always a resolved, concrete value (never None) — the route
+    handler resolves a style-appropriate default at job creation, per
+    run_full_pipeline's own pace-resolution logic, so Regenerate (which
+    calls generate_language_video directly, bypassing that resolution)
+    always has a real number to reuse."""
+    pitch: float | None = None
+    """Whole-job voice settings (speaker/style/pace/pitch), set once at
+    job creation and never changed afterward — Regenerate reuses these
+    exact values so a re-rendered language keeps the officer's original
+    voice choice instead of silently reverting to the pipeline's own
+    defaults."""
     languages: dict[LanguageCode, LanguageJobState] = field(default_factory=dict)
     lock: threading.Lock = field(default_factory=threading.Lock)
 
