@@ -100,3 +100,67 @@ def test_output_decodes_end_to_end_without_errors(composed):
     )
     assert result.returncode == 0, result.stderr
     assert result.stderr.strip() == ""
+
+
+def test_avatar_pip_is_circular_not_rectangular(tmp_path):
+    """Real regression guard for the circle-not-square/rectangle PiP
+    shape: composites a solid-red avatar onto a solid-green B-roll and
+    checks actual pixel colors in the extracted frame — the PiP
+    bounding box's CORNER must show the B-roll's green showing through
+    (the old rectangular box would show red there), the box's CENTER
+    must show the avatar's red, and a pixel right at the circle's edge
+    must show the gold ring border — not just "ffmpeg exited 0"."""
+    from PIL import Image
+
+    from rendering.adapters.ffmpeg_video_renderer import (
+        CAPTION_BAR_HEIGHT, PIP_MARGIN, PIP_RING_BORDER, PIP_WIDTH,
+    )
+
+    broll_path = tmp_path / "green_broll.mp4"
+    subprocess.run(
+        ["ffmpeg", "-y", "-v", "error",
+         "-f", "lavfi", "-i", "color=0x00ff00:s=720x1280:d=2",
+         "-f", "lavfi", "-i", "sine=frequency=440:duration=2",
+         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(broll_path)],
+        check=True, timeout=30,
+    )
+    avatar_path = tmp_path / "red_avatar.mp4"
+    subprocess.run(
+        ["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "color=0xff0000:s=300x300:d=2",
+         "-c:v", "libx264", "-pix_fmt", "yuv420p", str(avatar_path)],
+        check=True, timeout=30,
+    )
+    caption_path = _make_dummy_caption_track(tmp_path, duration=2.0)
+
+    renderer = FfmpegVideoRenderer(output_dir=tmp_path / "out")
+    video_asset = renderer.compose_pip_and_captions(
+        broll_video_path=str(broll_path), avatar_clip_path=str(avatar_path), caption_track_path=caption_path,
+        duration_seconds=2.0, project_id=PROJECT_ID, storyboard_id=STORYBOARD_ID, language=LanguageCode.EN,
+    )
+
+    frame_path = tmp_path / "frame.png"
+    subprocess.run(
+        ["ffmpeg", "-y", "-v", "error", "-i", video_asset.storage_path_mp4, "-frames:v", "1", str(frame_path)],
+        check=True, timeout=30,
+    )
+    img = Image.open(frame_path).convert("RGB")
+
+    # The PiP bounding box, in absolute frame coordinates (bottom-left,
+    # above the caption bar) — mirrors compose_pip_and_captions' own
+    # overlay math (y=H-CAPTION_BAR_HEIGHT-h-PIP_MARGIN, x=PIP_MARGIN).
+    ring_diameter = PIP_WIDTH + PIP_RING_BORDER * 2
+    box_x0 = PIP_MARGIN
+    box_y0 = 1280 - CAPTION_BAR_HEIGHT - ring_diameter - PIP_MARGIN
+    center = (box_x0 + ring_diameter // 2, box_y0 + ring_diameter // 2)
+    corner = (box_x0 + 2, box_y0 + 2)  # just inside the bounding box's actual corner
+    edge = (box_x0 + ring_diameter // 2, box_y0 + 2)  # top-center — right on the ring
+
+    def _is_close(pixel: tuple[int, int, int], target: tuple[int, int, int], tol: int = 40) -> bool:
+        return all(abs(a - b) <= tol for a, b in zip(pixel, target))
+
+    assert _is_close(img.getpixel(corner), (0, 255, 0)), (
+        f"corner pixel {img.getpixel(corner)} should show the green B-roll through the masked-out "
+        "corner — a rectangular PiP box would show red/gold there instead"
+    )
+    assert _is_close(img.getpixel(center), (255, 0, 0)), f"center pixel {img.getpixel(center)} should be the red avatar"
+    assert _is_close(img.getpixel(edge), (0xc9, 0xa2, 0x27)), f"edge pixel {img.getpixel(edge)} should be the gold ring"

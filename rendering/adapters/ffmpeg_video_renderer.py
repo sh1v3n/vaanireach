@@ -42,6 +42,8 @@ VIDEO_OUTPUT_DIR = Path(os.environ.get("RENDERED_VIDEO_OUTPUT_DIR", "./data/vide
 FRAME_RATE = 25
 PIP_WIDTH = 200
 PIP_MARGIN = 16
+PIP_RING_BORDER = 6
+PIP_RING_COLOR = "0xc9a227"  # matches frontend/tailwind.config.ts's `gold` token
 
 # Maps our TransitionType straight onto ffmpeg's built-in xfade
 # transition names — no bespoke transition code, just the standard
@@ -391,8 +393,8 @@ class FfmpegVideoRenderer(VideoRenderer):
         language: LanguageCode,
     ) -> VideoAsset:
         """Composites an existing B-roll+audio video (compose_multi_scene's
-        own output) with a looping avatar PiP box (bottom-left, above the
-        caption bar) and a burned-in caption track (rendering/adapters/
+        own output) with a looping avatar PiP bubble (bottom-left, above
+        the caption bar) and a burned-in caption track (rendering/adapters/
         caption_burner.py), in one ffmpeg pass. `-stream_loop -1` on the
         avatar input means a clip shorter than `duration_seconds` (e.g.
         the Tier-3 static fallback) loops seamlessly to cover the whole
@@ -400,7 +402,17 @@ class FfmpegVideoRenderer(VideoRenderer):
         (audio-driven, already matching `duration_seconds`) effectively
         never repeats. `-t duration_seconds` caps the final output so
         neither a looped avatar nor a slightly-longer (frame-quantized)
-        caption track can extend it."""
+        caption track can extend it.
+
+        The avatar is masked to a circle (not the old square/rectangular
+        box) with a thin gold ring border, matching the frontend's navy/
+        gold theme — a video-call-style bubble rather than a floating
+        cutout. Built via ffmpeg's geq filter: alpha is set to 255 inside
+        the circle (distance from center <= radius) and 0 outside it,
+        applied to both the avatar footage (cropped to a square first,
+        force_original_aspect_ratio=increase + centered crop, so a
+        non-square source portrait doesn't distort into an ellipse) and
+        a solid-gold circle rendered as the ring behind it."""
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
         video_asset = VideoAsset(
@@ -409,9 +421,17 @@ class FfmpegVideoRenderer(VideoRenderer):
         )
         out_path = self.output_dir / f"{video_asset.id}.mp4"
 
+        ring_diameter = PIP_WIDTH + PIP_RING_BORDER * 2
+        circle_alpha = (
+            "geq=lum='p(X,Y)':a='if(gt(pow(X-{c}\\,2)+pow(Y-{c}\\,2)\\,pow({c}\\,2))\\,0\\,255)'"
+        )
         filter_complex = (
-            f"[1:v]scale={PIP_WIDTH}:-2[avt];"
-            f"[0:v][avt]overlay=x={PIP_MARGIN}:y=H-{CAPTION_BAR_HEIGHT}-h-{PIP_MARGIN}:shortest=0[v1];"
+            f"color=c={PIP_RING_COLOR}:size={ring_diameter}x{ring_diameter}:duration={duration_seconds:.3f}:"
+            f"rate={FRAME_RATE},format=yuva420p,{circle_alpha.format(c=ring_diameter / 2)}[ring];"
+            f"[1:v]scale={PIP_WIDTH}:{PIP_WIDTH}:force_original_aspect_ratio=increase,crop={PIP_WIDTH}:{PIP_WIDTH},"
+            f"format=yuva420p,{circle_alpha.format(c=PIP_WIDTH / 2)}[avt];"
+            f"[ring][avt]overlay=x={PIP_RING_BORDER}:y={PIP_RING_BORDER}:shortest=0[avt_ring];"
+            f"[0:v][avt_ring]overlay=x={PIP_MARGIN}:y=H-{CAPTION_BAR_HEIGHT}-h-{PIP_MARGIN}:shortest=0[v1];"
             f"[v1][2:v]overlay=x=0:y=0:shortest=0[vout]"
         )
         cmd = [
