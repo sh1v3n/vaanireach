@@ -171,3 +171,49 @@ def test_srt_and_vtt_download_endpoints(client):
     vtt = client.get(f"/pipeline/jobs/{job_id}/captions/en.vtt")
     assert vtt.status_code == 200
     assert vtt.text.startswith("WEBVTT")
+
+
+def test_edit_a_scene_with_grounded_text_verifies_and_saves(client):
+    job = _create_job_and_wait(client)
+    job_id = job["job_id"]
+    scene_id = job["languages"]["en"]["scenes"][0]["id"]
+
+    resp = client.post(
+        f"/pipeline/jobs/{job_id}/languages/en/edit",
+        json={"scene_id": scene_id, "narration_segment_text": "Recipients get ₹10,000 in total."},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["verification"]["status"] == "verified"
+    assert body["verification"]["is_blocking"] is False
+
+    job_after = client.get(f"/pipeline/jobs/{job_id}").json()
+    edited_scene = next(s for s in job_after["languages"]["en"]["scenes"] if s["id"] == scene_id)
+    assert edited_scene["narration_segment_text"] == "Recipients get ₹10,000 in total."
+
+
+def test_edit_a_scene_with_invented_content_flags_but_still_saves(client):
+    """The officer is the human approval gate — editing to something
+    unverified must still be visible/savable (they might fix the
+    source facts separately, or regenerate after correcting it), but
+    the verification result must clearly flag it as not grounded."""
+    job = _create_job_and_wait(client)
+    job_id = job["job_id"]
+    scene_id = job["languages"]["en"]["scenes"][0]["id"]
+
+    resp = client.post(
+        f"/pipeline/jobs/{job_id}/languages/en/edit",
+        json={"scene_id": scene_id, "narration_segment_text": "Recipients get ₹99,999,999 immediately."},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["verification"]["is_blocking"] is True
+
+
+def test_edit_unknown_scene_returns_404(client):
+    job = _create_job_and_wait(client)
+    resp = client.post(
+        f"/pipeline/jobs/{job['job_id']}/languages/en/edit",
+        json={"scene_id": "does-not-exist", "narration_segment_text": "anything"},
+    )
+    assert resp.status_code == 404

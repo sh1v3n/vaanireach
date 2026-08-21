@@ -16,8 +16,10 @@ from fastapi.responses import FileResponse, PlainTextResponse
 from pydantic import BaseModel
 
 from app.pipeline_jobs import JobRecord, JobStore, LanguageJobState
-from core.models.enums import LanguageCode
+from core.models.claim import Claim
+from core.models.enums import Criticality, LanguageCode
 from providers.documents.text_extraction import extract_text_from_upload_bytes
+from providers.verification.deterministic_fact_verifier import DeterministicFactVerifier
 from rendering.multilingual_video import run_full_pipeline
 
 router = APIRouter(prefix="/pipeline", tags=["pipeline"])
@@ -228,3 +230,39 @@ async def reject_language(job_id: str, language: LanguageCode) -> dict:
         state = _get_pending_review_language_state(record, language)
         state.status = "rejected"
     return {"status": "rejected"}
+
+
+class EditSceneRequest(BaseModel):
+    scene_id: str
+    narration_segment_text: str
+
+
+@router.post("/jobs/{job_id}/languages/{language}/edit")
+async def edit_scene(job_id: str, language: LanguageCode, payload: EditSceneRequest) -> dict:
+    record = job_store.get_job(job_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Job not found.")
+
+    with record.lock:
+        state = record.languages.get(language)
+        if state is None:
+            raise HTTPException(status_code=404, detail="No such language on this job.")
+
+        scene = next((s for s in state.result.scenes if s.id == payload.scene_id), None)
+        if scene is None:
+            raise HTTPException(status_code=404, detail="No such scene on this language's result.")
+
+        claim = Claim(
+            project_id=job_id, claim_text=payload.narration_segment_text, language=language,
+            source_fact_ids=list(scene.source_fact_ids), claim_type=scene.narrative_role.value,
+            criticality=Criticality.MEDIUM,
+        )
+        verification = DeterministicFactVerifier().verify_claim(claim, state.result.facts)
+
+        scene.narration_segment_text = payload.narration_segment_text
+
+    return {
+        "scene_id": scene.id,
+        "narration_segment_text": scene.narration_segment_text,
+        "verification": _serialize_verification_result(verification),
+    }
