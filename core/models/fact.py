@@ -18,6 +18,18 @@ class SourceFact(IdentifiedModel):
     """Normalized value, e.g. "₹2000" or "2026-03-31"."""
     raw_text: str
     """The literal text the value was extracted from."""
+    qualifier: str | None = None
+    """A short bare phrase (no leading preposition) distinguishing this
+    fact from OTHER facts of the same fact_type in the same document —
+    e.g. "students filing online applications" vs "institutions
+    verifying applications" when a document lists multiple deadlines.
+    Set only when needed for disambiguation; None for the common case of
+    one fact per type. Exists so narration generation (see
+    providers/narrative/template_story_director.py) can voice each fact
+    as its own clearly-attributed sentence instead of joining same-typed
+    facts into one run-on line that loses which value belongs to what —
+    the exact failure mode with tabular/list source data (e.g. a table
+    of several closing dates for different applicant categories)."""
     source_span: SourceSpan
     criticality: Criticality
     confidence: float = Field(ge=0.0, le=1.0)

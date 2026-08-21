@@ -210,6 +210,42 @@ def _join_values(facts: list[SourceFact]) -> str:
     return ", ".join(values[:-1]) + " and " + values[-1]
 
 
+# Per-role narration when a role bucket has exactly one fact, or every
+# fact in it lacks a distinguishing qualifier — the original phrasing
+# this feature always used, centralized here so both the joined path
+# and the per-fact fallback below share one definition.
+_JOINED_NARRATION: dict[NarrativeRole, str] = {
+    NarrativeRole.ANNOUNCEMENT: "Announcing {value}.",
+    NarrativeRole.BENEFIT: "Eligible recipients receive {value}.",
+    NarrativeRole.ELIGIBILITY: "This scheme is open to {value}.",
+    NarrativeRole.HOW_TO: "To apply, use {value}.",
+    NarrativeRole.DEADLINE: "Applications close on {value}.",
+}
+
+# Per-role narration for ONE fact that carries a qualifier — used when a
+# role bucket has multiple same-typed facts that must stay
+# distinguishable (tabular/list source data, e.g. several closing dates
+# for different applicant categories) instead of being joined into one
+# run-on sentence that loses which value belongs to what.
+_QUALIFIED_NARRATION: dict[NarrativeRole, str] = {
+    NarrativeRole.ANNOUNCEMENT: "For {qualifier}, announcing {value}.",
+    NarrativeRole.BENEFIT: "For {qualifier}, eligible recipients receive {value}.",
+    NarrativeRole.ELIGIBILITY: "For {qualifier}, this scheme is open to {value}.",
+    NarrativeRole.HOW_TO: "For {qualifier}, {value}.",
+    NarrativeRole.DEADLINE: "For {qualifier}, the deadline is {value}.",
+}
+
+
+def _per_fact_narration(role: NarrativeRole, fact: SourceFact) -> str:
+    """One fact's own sentence — used when a role bucket is split into
+    one scene per fact (see plan_narrative_arc). Falls back to the
+    generic single-fact phrasing when THIS particular fact has no
+    qualifier even though a sibling fact in the same bucket does."""
+    if fact.qualifier:
+        return _QUALIFIED_NARRATION[role].format(qualifier=fact.qualifier, value=fact.value)
+    return _JOINED_NARRATION[role].format(value=fact.value)
+
+
 def _infer_scene_type(facts: list[SourceFact]) -> SceneType:
     for fact in facts:
         scene_type = _FACT_TYPE_TO_SCENE_TYPE.get(fact.fact_type)
@@ -282,24 +318,33 @@ class TemplateStoryDirector(StoryDirector):
             role_facts = buckets.get(role, [])
             if not role_facts:
                 continue  # e.g. PROBLEM: no fact type maps here in template-v1, so it's skipped, not invented
-            joined = _join_values(role_facts)
-            narration = {
-                NarrativeRole.ANNOUNCEMENT: f"Announcing {joined}.",
-                NarrativeRole.BENEFIT: f"Eligible recipients receive {joined}.",
-                NarrativeRole.ELIGIBILITY: f"This scheme is open to {joined}.",
-                NarrativeRole.HOW_TO: f"To apply, use {joined}.",
-                NarrativeRole.DEADLINE: f"Applications close on {joined}.",
-            }[role]
-            add_scene(role, role_facts, narration)
+            if len(role_facts) > 1 and any(f.qualifier for f in role_facts):
+                # Tabular/list source data: several same-typed facts that
+                # must stay distinguishable (e.g. multiple closing dates
+                # for different applicant categories, extracted with a
+                # qualifier for exactly this reason) — one scene per
+                # fact, in document order, instead of joining them into
+                # one run-on sentence that loses which value belongs to
+                # what (e.g. three dates read back to back with no
+                # indication of which is which).
+                for fact in role_facts:
+                    add_scene(role, [fact], _per_fact_narration(role, fact))
+            else:
+                joined = _join_values(role_facts)
+                narration = _JOINED_NARRATION[role].format(value=joined)
+                add_scene(role, role_facts, narration)
 
         # --- URGENCY: only if there's a SECOND, distinct deadline-related
-        # fact to add (e.g. an extended/revised date) — one deadline fact
-        # alone gives URGENCY nothing to say that DEADLINE didn't already,
-        # and "time is running out" without a verified current-date
-        # comparison is exactly the unsupported relative-temporal claim
-        # the fact-consistency rule forbids. Omitted for this document.
+        # fact to add (e.g. an extended/revised date) AND those deadlines
+        # weren't already split into their own distinguishable scenes
+        # above — a qualifier-driven split already voices each deadline
+        # clearly, so restating them jointly here would be pure
+        # repetition. "Time is running out" without a verified
+        # current-date comparison is also exactly the unsupported
+        # relative-temporal claim the fact-consistency rule forbids.
         deadline_facts = buckets.get(NarrativeRole.DEADLINE, [])
-        if len(deadline_facts) > 1:
+        deadline_facts_were_split = len(deadline_facts) > 1 and any(f.qualifier for f in deadline_facts)
+        if len(deadline_facts) > 1 and not deadline_facts_were_split:
             joined = _join_values(deadline_facts)
             add_scene(NarrativeRole.URGENCY, deadline_facts, f"Note: the deadline is {joined}.")
 

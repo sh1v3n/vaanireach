@@ -116,6 +116,14 @@ target-language video (including an English one) gets generated from, so it must
 left in Hindi/Marathi/any other source language — translate it, don't just copy it.
 - "raw_text": the exact verbatim text this was extracted from, in the ORIGINAL source \
 language — do not translate this one, it exists for provenance/citation.
+- "qualifier": ONLY set this when the document contains MORE THAN ONE fact of the SAME \
+fact_type that must not be confused with each other — e.g. a table or list with several \
+different closing dates, or several different amounts for different categories of \
+applicant. In that case, give each of those facts a short bare phrase (2-6 words, NO \
+leading preposition like "for"/"by") naming who or what THIS SPECIFIC fact is about — e.g. \
+"students filing online applications" and "institutions verifying applications" for two \
+different deadline facts in the same document. Set to null whenever a fact_type appears \
+only once, or when nothing in the text actually distinguishes multiple instances of it.
 - "page_number": integer page number it appears on
 - "section_heading": the nearest section heading, or null
 - "criticality": one of "low", "medium", "high", "critical" — how much a wrong/missing \
@@ -384,12 +392,15 @@ def _fact_from_json(item: dict, *, document_id: str, project_id: str) -> SourceF
     confidence = max(0.0, min(1.0, float(item.get("confidence", 0.7))))
     raw_text = str(item.get("raw_text", item.get("value", ""))).strip()
     page_number = int(item.get("page_number") or 1)
+    qualifier = item.get("qualifier")
+    qualifier = str(qualifier).strip() if qualifier else None
     return SourceFact(
         project_id=project_id,
         document_id=document_id,
         fact_type=fact_type,
         value=str(item["value"]).strip(),
         raw_text=raw_text,
+        qualifier=qualifier or None,
         source_span=SourceSpan(
             document_id=document_id,
             page_number=page_number,

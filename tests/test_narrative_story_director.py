@@ -40,13 +40,20 @@ PROJECT_ID = "proj-sample-notice"
 DOCUMENT_ID = "doc-sample-notice"
 
 
-def _fact(fact_type: FactType, value: str, raw_text: str, criticality: Criticality = Criticality.MEDIUM) -> SourceFact:
+def _fact(
+    fact_type: FactType,
+    value: str,
+    raw_text: str,
+    criticality: Criticality = Criticality.MEDIUM,
+    qualifier: str | None = None,
+) -> SourceFact:
     return SourceFact(
         project_id=PROJECT_ID,
         document_id=DOCUMENT_ID,
         fact_type=fact_type,
         value=value,
         raw_text=raw_text,
+        qualifier=qualifier,
         source_span=SourceSpan(document_id=DOCUMENT_ID, page_number=1, text_span=raw_text),
         criticality=criticality,
         confidence=0.95,
@@ -319,3 +326,74 @@ def test_narration_contains_no_digits_absent_from_facts():
                 f"scene {scene.narrative_role} narration contains digits {digit_run!r} "
                 "not present in any verified fact"
             )
+
+
+def _tabular_deadline_facts() -> list[SourceFact]:
+    """Reproduces the real ugc_scholarship_circular.pdf bug report
+    (2026-08-21): two closing dates for two different applicant
+    categories, extracted from what was originally a two-row table."""
+    return [
+        _fact(
+            FactType.ORGANIZATION, "University Grants Commission",
+            "University Grants Commission",
+        ),
+        _fact(
+            FactType.DEADLINE, "2021-11-30",
+            "Closing date for filing online applications by students: 30th November, 2021",
+            criticality=Criticality.HIGH,
+            qualifier="students filing online applications",
+        ),
+        _fact(
+            FactType.DEADLINE, "2021-12-15",
+            "Closing date for Verification of applications by Institutions: 15th December, 2021",
+            criticality=Criticality.HIGH,
+            qualifier="institutions verifying applications",
+        ),
+    ]
+
+
+def test_tabular_deadlines_get_one_scene_each_not_joined():
+    """The bug this whole feature fixes: two DEADLINE facts must not be
+    merged into one "X and Y" sentence that loses which date belongs to
+    which action — each gets its own scene, in document order, naming
+    its own qualifier."""
+    facts = _tabular_deadline_facts()
+    _, scenes = TemplateStoryDirector().plan_narrative_arc(facts)
+
+    deadline_scenes = [s for s in scenes if s.narrative_role == NarrativeRole.DEADLINE]
+    assert len(deadline_scenes) == 2, f"expected one DEADLINE scene per fact, got {len(deadline_scenes)}"
+
+    first, second = deadline_scenes
+    assert first.order_index < second.order_index  # document order preserved
+
+    assert "students filing online applications" in first.narration_segment_text
+    assert "2021-11-30" in first.narration_segment_text
+    assert "2021-12-15" not in first.narration_segment_text  # the other date must NOT leak in
+
+    assert "institutions verifying applications" in second.narration_segment_text
+    assert "2021-12-15" in second.narration_segment_text
+    assert "2021-11-30" not in second.narration_segment_text  # the other date must NOT leak in
+
+    # Each DEADLINE scene cites exactly the one fact it's about — not both.
+    assert first.source_fact_ids == [facts[1].id]
+    assert second.source_fact_ids == [facts[2].id]
+
+
+def test_urgency_omitted_when_deadlines_were_already_split():
+    """Restating both already-distinguished deadlines in a joint URGENCY
+    scene would just repeat what the two DEADLINE scenes already said
+    clearly — URGENCY must not fire in this case."""
+    facts = _tabular_deadline_facts()
+    _, scenes = TemplateStoryDirector().plan_narrative_arc(facts)
+    assert NarrativeRole.URGENCY not in {s.narrative_role for s in scenes}
+
+
+def test_single_fact_per_role_narration_is_unchanged_by_the_qualifier_feature():
+    """Regression guard: a document with exactly one fact per role (the
+    common case, no table/list involved) must produce byte-identical
+    narration to before this feature existed."""
+    facts = sample_notice_facts()
+    _, scenes = TemplateStoryDirector().plan_narrative_arc(facts)
+    deadline_scenes = [s for s in scenes if s.narrative_role == NarrativeRole.DEADLINE]
+    assert len(deadline_scenes) == 1
+    assert deadline_scenes[0].narration_segment_text.startswith("Applications close on ")
