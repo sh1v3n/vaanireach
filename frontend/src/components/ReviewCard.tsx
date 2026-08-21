@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { motion } from "framer-motion";
 
-import { approveLanguage, editScene, rejectLanguage, regenerateLanguage } from "@/lib/api-client";
+import { API_BASE_URL, approveLanguage, editScene, rejectLanguage, regenerateLanguage } from "@/lib/api-client";
 import type { LanguageCode, LanguageJobView } from "@/types";
 
 const LANGUAGE_LABELS: Record<LanguageCode, string> = {
@@ -94,13 +94,13 @@ export function ReviewCard({
         </div>
       </div>
 
-      <video controls src={view.video_url} className="mb-4 w-full rounded-lg" />
+      <video controls src={`${API_BASE_URL}${view.video_url}`} className="mb-4 w-full rounded-lg" />
 
       <div className="mb-4 flex gap-6 text-sm">
         <span>Facts verified: {view.verified_count}/{view.scenes.length}</span>
         <span>Blocking issues: {view.blocking_count}</span>
-        <a href={view.srt_url} className="text-gold-dark underline">SRT</a>
-        <a href={view.vtt_url} className="text-gold-dark underline">VTT</a>
+        <a href={`${API_BASE_URL}${view.srt_url}`} className="text-gold-dark underline">SRT</a>
+        <a href={`${API_BASE_URL}${view.vtt_url}`} className="text-gold-dark underline">VTT</a>
       </div>
 
       <div className="mb-4 space-y-3">
@@ -151,7 +151,7 @@ export function ReviewCard({
               ) : (
                 <div className="flex items-start justify-between gap-2">
                   <p className="text-sm">{scene.narration_segment_text}</p>
-                  {view.status === "pending_review" && (
+                  {view.status === "pending_review" && !view.regenerating && (
                     <button
                       type="button"
                       onClick={() => { setEditingSceneId(scene.id); setDraftText(scene.narration_segment_text); setEditFeedback(null); }}
@@ -194,6 +194,9 @@ export function ReviewCard({
             {view.regenerating ? "Regenerating…" : "Regenerate"}
           </button>
         </div>
+      )}
+      {view.error && (
+        <p className="mt-2 text-xs text-red-600">⚠️ {view.error}</p>
       )}
     </motion.div>
   );

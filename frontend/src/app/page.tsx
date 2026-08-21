@@ -56,7 +56,7 @@ export default function HomePage() {
             className="mt-3 max-w-xl text-white/80"
           >
             Turn a government notice into a multilingual, fact-verified narrated video — ready for a
-            human to review and approve before it's published.
+            human to review and approve before it&apos;s published.
           </motion.p>
 
           <motion.div

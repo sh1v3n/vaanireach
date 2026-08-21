@@ -7,7 +7,19 @@ backend/README.md) — no Docker required.
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 from dotenv import load_dotenv
+
+# Must run before importing app.routes: that import transitively pulls in
+# provider modules (sarvam_tts_provider.py, cloudflare_provider.py,
+# avatar_provider.py) that read os.environ for optional path-override env
+# vars at MODULE IMPORT TIME, so .env must already be loaded by then. The
+# path is made absolute and independent of cwd — resolving "../.env"
+# relative to the current working directory silently no-ops if the backend
+# is ever launched from a directory other than backend/.
+load_dotenv(Path(__file__).resolve().parents[2] / ".env")  # repo-root .env
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -26,8 +38,6 @@ from app.routes import (
     verification,
     workflow,
 )
-
-load_dotenv("../.env")  # repo-root .env — backend runs with cwd=backend/, PYTHONPATH=..
 
 settings = get_settings()
 

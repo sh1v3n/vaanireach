@@ -130,6 +130,7 @@ export interface PipelineVerificationResult {
 export interface LanguageJobView {
   status: LanguageJobStatus;
   regenerating: boolean;
+  error: string | null;
   avatar_tier: number | null;
   avatar_composited: boolean;
   video_url: string;

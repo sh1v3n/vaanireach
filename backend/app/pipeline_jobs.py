@@ -27,6 +27,7 @@ class LanguageJobState:
     status: LanguageStatus
     result: LanguageVideoResult
     regenerating: bool = False
+    error: str | None = None
 
 
 @dataclass

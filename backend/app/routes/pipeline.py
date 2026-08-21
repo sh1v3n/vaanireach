@@ -8,6 +8,7 @@ unrelated 501-stub architecture — untouched, unaffected by this file.
 """
 from __future__ import annotations
 
+import logging
 import threading
 import traceback
 
@@ -23,6 +24,8 @@ from providers.narrative.template_story_director import TemplateStoryDirector
 from providers.translation.groq_translation_provider import GroqTranslationProvider
 from providers.verification.deterministic_fact_verifier import DeterministicFactVerifier
 from rendering.multilingual_video import generate_language_video, run_full_pipeline
+
+logger = logging.getLogger("vaanireach.backend.app.routes.pipeline")
 
 router = APIRouter(prefix="/pipeline", tags=["pipeline"])
 job_store = JobStore()
@@ -131,6 +134,7 @@ def _serialize_language_state(job_id: str, state: LanguageJobState) -> dict:
     return {
         "status": state.status,
         "regenerating": state.regenerating,
+        "error": state.error,
         "avatar_tier": result.avatar_tier,
         "avatar_composited": result.avatar_composited,
         "video_url": f"/pipeline/jobs/{job_id}/video/{result.language.value}",
@@ -248,9 +252,7 @@ async def edit_scene(job_id: str, language: LanguageCode, payload: EditSceneRequ
         raise HTTPException(status_code=404, detail="Job not found.")
 
     with record.lock:
-        state = record.languages.get(language)
-        if state is None:
-            raise HTTPException(status_code=404, detail="No such language on this job.")
+        state = _get_pending_review_language_state(record, language)
 
         scene = next((s for s in state.result.scenes if s.id == payload.scene_id), None)
         if scene is None:
@@ -284,9 +286,11 @@ def _run_regenerate(record: JobRecord, language: LanguageCode) -> None:
             facts, image_paths, story_director=TemplateStoryDirector(), translator=GroqTranslationProvider(),
             target_language=language, project_id=record.job_id, precomputed_scenes=scenes,
         )
-    except Exception:  # noqa: BLE001 - a failed regenerate must never crash the thread or corrupt state
+    except Exception as exc:  # noqa: BLE001 - a failed regenerate must never crash the thread or corrupt state
+        logger.exception("_run_regenerate: regenerate failed for language=%s (job=%s)", language, record.job_id)
         with record.lock:
             record.languages[language].regenerating = False
+            record.languages[language].error = str(exc)
         return
 
     with record.lock:

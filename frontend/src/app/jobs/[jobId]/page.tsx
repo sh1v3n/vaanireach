@@ -7,6 +7,10 @@ import { ReviewCard } from "@/components/ReviewCard";
 import { getJob } from "@/lib/api-client";
 import type { JobView, LanguageCode } from "@/types";
 
+function hasRegeneratingLanguage(j: JobView): boolean {
+  return Object.values(j.languages).some((lang) => lang.regenerating);
+}
+
 export default function JobPage() {
   const params = useParams<{ jobId: string }>();
   const jobId = params.jobId;
@@ -19,6 +23,7 @@ export default function JobPage() {
     try {
       const data = await getJob(jobId);
       setJob(data);
+      setPollError(null);
     } catch (err) {
       setPollError(err instanceof Error ? err.message : "Failed to load job.");
     }
@@ -28,7 +33,11 @@ export default function JobPage() {
     refresh();
     const interval = setInterval(() => {
       const current = jobRef.current;
-      if (current && (current.status === "pending_review" || current.status === "failed")) {
+      if (
+        current &&
+        (current.status === "pending_review" || current.status === "failed") &&
+        !hasRegeneratingLanguage(current)
+      ) {
         clearInterval(interval);
         return;
       }
