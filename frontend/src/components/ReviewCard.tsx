@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { motion } from "framer-motion";
 
+import { DocumentSummary } from "@/components/DocumentSummary";
 import { API_BASE_URL, approveLanguage, editScene, rejectLanguage, regenerateLanguage } from "@/lib/api-client";
 import type { LanguageCode, LanguageJobView } from "@/types";
 
@@ -166,6 +167,8 @@ export function ReviewCard({
           );
         })}
       </div>
+
+      <DocumentSummary scenes={view.scenes} />
 
       {view.status === "pending_review" && (
         <div className="flex gap-3">
