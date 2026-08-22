@@ -40,13 +40,17 @@ published.** Anything that can't be verified is flagged, not invented.
   paste the notice text directly.
 - Pick any of 9 Indian languages, a narrator voice, a narration style
   (news / storytelling), and pace/pitch — before generating.
-- Live progress while the pipeline runs (facts as they're extracted,
-  current pipeline stage).
+- Live progress while the pipeline runs: an animated Document →
+  Extracting → Source Fact Ledger flow diagram, with each detected fact
+  flying in as its own chip as it's found — not a static checklist.
 - A review page per job: watch each language reach `pending_review`, see
   the extracted facts and verification results, preview the generated
   video (talking avatar in a circular picture-in-picture over B-roll
   footage, with burned-in captions), and Approve / Reject / Edit /
   Regenerate before it counts as published.
+- Below the editable script, an animated bullet-point Document Summary
+  (one bullet per scene, reusing the already-verified narration — no
+  extra generation call) with a one-click Copy text button.
 
 ## Architecture
 
@@ -86,21 +90,31 @@ decisions).
 ## Core workflow
 
 1. **Document Intelligence** — take a pasted notice or a `.txt`/`.pdf`
-   upload (including scanned PDFs via OCR).
+   upload (including scanned PDFs via OCR), in any language — not just
+   English.
 2. **Source Fact Ledger** — structured, provenance-tagged facts (amounts,
    dates, deadlines, names, locations, eligibility, …) become the single
-   source of truth. Gemini-backed extraction.
+   source of truth. Groq-backed extraction; every fact's `value` is
+   normalized to English regardless of the source document's language
+   (so a Marathi/Hindi notice still drives correct output in every
+   target language, English included), while `raw_text` stays verbatim
+   in the original language for provenance. When a document repeats the
+   same fact type with genuinely different subjects — a table of several
+   closing dates for different applicant categories, say — each fact
+   also gets a short `qualifier` so narration can voice them as separate,
+   clearly-attributed sentences instead of merging them into one
+   confusing run-on line.
 3. **Script Generation + Translation** — narration grounded in the
    ledger, generated per language for up to 9 Indian languages
    (`LanguageCode`: en, hi, mr, ta, bn, te, kn, ml, gu).
 4. **Verification** — every generated claim is checked deterministically
-   (regex/`rapidfuzz`) or semantically (Gemini) against the ledger;
+   (regex/`rapidfuzz`) or semantically (Groq) against the ledger;
    blocking unverified/contradicted claims trigger an automatic
    regenerate pass before anything reaches review.
 5. **Media Generation + Composition** — a talking-avatar hook (Hedra →
-   D-ID → local fallback), narrated B-roll images (Hugging Face), and
-   voice audio (Sarvam AI → `edge-tts` fallback) are generated and
-   composed via ffmpeg into a final MP4 with a circular avatar
+   D-ID → local fallback), narrated B-roll images (Cloudflare Workers
+   AI), and voice audio (Sarvam AI → `edge-tts` fallback) are generated
+   and composed via ffmpeg into a final MP4 with a circular avatar
    picture-in-picture and burned-in captions, plus SRT/VTT export.
 6. **Human Review + Approval** — an officer reviews the script, the
    detected facts, and verification results per language on the review
@@ -116,8 +130,9 @@ decisions).
 | Frontend (`frontend/`) | Next.js (TypeScript, App Router) + Tailwind CSS + Framer Motion | The real product UI — landing page, drag-and-drop upload, live job progress, review/approval flow |
 | Officer dashboard (`dashboard/`) | Streamlit | Original prototype UI, kept in the repo but superseded by the Next.js frontend above |
 | Persistence | In-memory job store (backend) / Streamlit session state (dashboard) | Nothing survives a process restart yet — SQLite/SQLModel remain unimplemented |
-| LLM | Google Gemini | Fact extraction, script generation, translation, semantic verification |
-| B-roll images | Hugging Face Serverless Inference API | Free tier, no billing required |
+| LLM | Groq (`openai/gpt-oss-120b`) | Fact extraction, script generation, semantic verification — swapped in for Gemini once Gemini's free-tier daily quota (20 requests/day/key/model) proved far too tight for real usage; Groq's free tier is far more generous and consistently sub-second. `GeminiLLMProvider` is kept in the codebase as an alternative, just not wired in |
+| Translation | Groq (same model, separate simpler client) | Per-scene narration translation into all 9 languages, with retry-on-rate-limit resilience |
+| B-roll images | Cloudflare Workers AI (FLUX.1-schnell) | Free neuron allowance, no billing required — swapped in for Hugging Face at the user's request; same drop-in resilience shape |
 | TTS | Sarvam AI → `edge-tts` fallback | Horizontal key rotation, then a free local fallback |
 | Avatar / video composition | Hedra → D-ID → local fallback; ffmpeg-based renderer | 3-tier resilience; circular PiP + burned-in captions composited in one ffmpeg pass |
 | Local dev | Native Python venv + npm | Runs directly on macOS/Linux/Windows, no Docker required |
@@ -135,31 +150,38 @@ Originally left open — see
 
 | Concern | Provider(s) | Resilience shape |
 |---|---|---|
-| LLM (facts / scripts / translation / semantic verification) | Google Gemini | Horizontal API-key rotation |
+| LLM (facts / scripts / semantic verification) | Groq (`openai/gpt-oss-120b`) | Horizontal API-key rotation, plus per-minute-token-limit-aware backoff (waits out Groq's own "try again in Ns" hint and retries the same key before rotating — rotating immediately is pointless against a shared-account rate limit) |
+| Translation | Groq, same model, separate client | On a transient rate limit, waits out Groq's hint and retries (up to 3 attempts) instead of failing the whole job outright |
 | TTS | Sarvam AI → `edge-tts` | Horizontal rotation, then a free local fallback |
 | Talking-avatar hook | Hedra → D-ID → static local clip | 2 vendors, then a locally-generated placeholder |
-| B-roll images | Hugging Face Serverless Inference API (free, no billing) | Content-addressed local cache → cold-start retry → local placeholder card |
+| B-roll images | Cloudflare Workers AI (free neuron allowance, no billing) | Content-addressed local cache → cold-start retry → local placeholder card |
 | Video composition | ffmpeg-based renderer (`rendering/adapters/ffmpeg_video_renderer.py`) | N/A — local, no external API |
 
-B-roll/avatar images were originally Google Imagen 3 — swapped to
-Hugging Face once it turned out Imagen requires a billing-enabled Google
-Cloud project even on free-tier Gemini API keys (every `generate_images`
-call 404'd, confirmed live). `GeminiImagenProvider` is kept in the
-codebase, just no longer wired in — see ADR-004.
+The LLM backend was originally Google Gemini — swapped to Groq once
+Gemini's free-tier daily quota (20 requests/day/key/model) proved far
+too tight for this pipeline's real usage, repeatedly exhausted across
+every configured key during live testing. `GeminiLLMProvider` is kept in
+the codebase as a drop-in alternative (same interface), just not wired
+into the live pipeline. B-roll/avatar images were originally Google
+Imagen 3, then Hugging Face — swapped to Cloudflare Workers AI at the
+user's request; `GeminiImagenProvider` and `HuggingFaceVisualProvider`
+are both kept in the codebase, just no longer wired in — see ADR-004.
 
 Every fallback tier exists so the pipeline degrades to *something free
 and local* instead of crashing when a vendor key is missing, rate-limited,
 or exhausted — see each provider's module docstring
-(`providers/llm/gemini_client.py`, `providers/tts/sarvam_tts_provider.py`,
-`providers/video/avatar_provider.py`, `providers/visual/huggingface_provider.py`)
+(`providers/llm/groq_client.py`, `providers/tts/sarvam_tts_provider.py`,
+`providers/video/avatar_provider.py`, `providers/visual/cloudflare_provider.py`)
 for the exact tier order.
 
 ## Current status
 
 **Implemented and runnable today:**
 - A working **Next.js frontend** (`frontend/`) — landing page, drag-and-drop
-  upload, language/voice/style/pace/pitch pickers, live pipeline progress,
-  and a per-job review page with Approve/Reject/Edit/Regenerate.
+  upload, language/voice/style/pace/pitch pickers, an animated live
+  fact-extraction pipeline visualization, and a per-job review page with
+  Approve/Reject/Edit/Regenerate plus an animated Document Summary
+  (with one-click copy) below the editable script.
 - A working **FastAPI backend** (`backend/app/routes/pipeline.py`) — job
   creation, status polling, video/caption serving, and the full
   approve/reject/edit/regenerate action set, all wired to the real
@@ -168,15 +190,21 @@ for the exact tier order.
   provenance/source-span models ([`core/models/`](core/models/),
   [`core/provenance/`](core/provenance/)).
 - **Fact extraction, multilingual script generation, and verification**
-  — Gemini-backed, with deterministic (regex/`rapidfuzz`) + semantic
+  — Groq-backed, with deterministic (regex/`rapidfuzz`) + semantic
   verification and an automatic regenerate-on-failure loop
-  ([`providers/llm/`](providers/llm/)).
+  ([`providers/llm/`](providers/llm/)). Fact values are always
+  normalized to English regardless of source-document language, and
+  same-typed facts from tabular/list source data get a distinguishing
+  `qualifier` so narration voices them separately instead of merging.
+- **Translation** — Groq-backed per-scene narration translation into all
+  9 languages, with retry-on-rate-limit resilience
+  ([`providers/translation/`](providers/translation/)).
 - **Text-to-speech** — Sarvam AI with an `edge-tts` fallback, plus
   hook/body audio slicing for the avatar + B-roll split
   ([`providers/tts/`](providers/tts/)).
 - **Talking-avatar generation** — Hedra → D-ID → local static fallback,
   3-tier resilience ([`providers/video/`](providers/video/)).
-- **B-roll image generation** — Hugging Face's free Inference API with a
+- **B-roll image generation** — Cloudflare Workers AI with a
   content-addressed local cache and a local placeholder fallback
   ([`providers/visual/`](providers/visual/)).
 - **Video composition** — ffmpeg: avatar hook + B-roll + circular avatar
@@ -214,14 +242,15 @@ cd backend
 python3 -m venv .venv
 source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-cp ../.env.example ../.env       # fill in GEMINI_API_KEYS at minimum
+cp ../.env.example ../.env       # fill in GROQ_API_KEYS at minimum
 PYTHONPATH=.. uvicorn app.main:app --reload
 ```
 
-`GEMINI_API_KEYS` is the one hard requirement (fact extraction/script
-generation have no fallback). `SARVAM_API_KEYS`/`HEDRA_API_KEYS`/
-`DID_API_KEYS`/`HF_API_KEY` are all optional — every one of those
-providers degrades to a free local fallback if unset.
+`GROQ_API_KEYS` is the one hard requirement (fact extraction, script
+generation, verification, and translation all run on it, with no
+fallback provider). `SARVAM_API_KEYS`/`HEDRA_API_KEYS`/`DID_API_KEYS`/
+`CLOUDFLARE_ACCOUNT_ID`+`CLOUDFLARE_API_TOKEN` are all optional — every
+one of those providers degrades to a free local fallback if unset.
 
 Visit `http://localhost:8000/docs` for the OpenAPI UI, or:
 
@@ -286,8 +315,8 @@ vaanireach/
 ├── dashboard/             Streamlit Officer Review Dashboard — original prototype UI
 ├── agents/                per-stage agent packages (namespaces only, no logic yet)
 ├── core/                  domain models, interfaces, provenance, workflow helpers
-├── providers/             LLM (Gemini), TTS (Sarvam/edge-tts), avatar (Hedra/D-ID),
-│                          visual (Hugging Face) provider implementations
+├── providers/             LLM + translation (Groq), TTS (Sarvam/edge-tts),
+│                          avatar (Hedra/D-ID), visual (Cloudflare) provider implementations
 ├── rendering/             video composition interfaces + ffmpeg adapter
 ├── fallback_assets/       the Tier-3 static avatar placeholder clip
 ├── local_cache/           generated B-roll image cache (gitignored, created at runtime)
@@ -302,7 +331,7 @@ vaanireach/
   `.env.example` — never committed).
 - Uploaded files are validated by type and size and given sanitized,
   collision-resistant storage paths ([`backend/app/security/`](backend/app/security/)).
-- Provider calls (Gemini/Sarvam/Hedra/D-ID) implement their own
+- Provider calls (Groq/Sarvam/Hedra/D-ID/Cloudflare) implement their own
   timeout/retry/key-rotation resilience — see each provider's module
   docstring under `providers/`.
 - Human approval is a hard requirement before publication — no code path
